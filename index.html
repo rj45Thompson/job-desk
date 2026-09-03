@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="A job-application desk: your profile, résumé and applications in your browser, with Claude answering from your own computer.">
+<title>Job Desk</title>
+<style>
+:root{
+  --paper:#FAF8F3; --card:#FFFFFF; --sunk:#F1EEE6;
+  --ink:#1D1B17; --soft:#5B574E; --faint:#8E897D;
+  --line:#E4DFD4; --line-soft:#EFEBE3;
+  --accent:#1F5F8B; --accent-soft:#E3EEF6;
+  --ok:#2A6F5F; --ok-soft:#E1F0EA;
+  --warn:#8A5A10; --warn-soft:#F8EDD6;
+  --bad:#A8442A; --bad-soft:#F7E5DF;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
+  --side:380px;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#141311; --card:#1C1B18; --sunk:#232220;
+    --ink:#ECE9E1; --soft:#ABA69B; --faint:#7B766C;
+    --line:#2F2D28; --line-soft:#252420;
+    --accent:#7FB3DB; --accent-soft:#16283A;
+    --ok:#6FBFA6; --ok-soft:#122A24;
+    --warn:#D6A544; --warn-soft:#2E2412;
+    --bad:#E08A6E; --bad-soft:#331C15;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#141311; --card:#1C1B18; --sunk:#232220;
+  --ink:#ECE9E1; --soft:#ABA69B; --faint:#7B766C;
+  --line:#2F2D28; --line-soft:#252420;
+  --accent:#7FB3DB; --accent-soft:#16283A;
+  --ok:#6FBFA6; --ok-soft:#122A24;
+  --warn:#D6A544; --warn-soft:#2E2412;
+  --bad:#E08A6E; --bad-soft:#331C15;
+}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:14.5px;line-height:1.5;-webkit-font-smoothing:antialiased;display:flex;flex-direction:column;min-height:100vh}
+button,input,textarea,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+a{color:var(--accent)}
+h2{font-size:15px;margin:0 0 4px;letter-spacing:.01em}
+.lede{margin:0 0 12px;color:var(--soft);font-size:13px}
+.hint{color:var(--faint);font-size:12px}
+
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--card);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px}
+.mark{width:32px;height:32px;border-radius:8px;background:var(--accent);color:#fff;display:grid;place-items:center;font-weight:700;font-size:13px;letter-spacing:.02em}
+.brand b{display:block;font-size:16px;line-height:1.1}
+.brand small{color:var(--faint);font-size:12px}
+.status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--soft);flex-wrap:wrap}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--faint);flex:none;box-shadow:0 0 0 3px var(--sunk)}
+.status[data-kind="on"] .dot{background:var(--ok)}
+.status[data-kind="busy"] .dot,.status[data-kind="code"] .dot{background:var(--warn)}
+.status[data-kind="off"] .dot{background:var(--faint)}
+.status[data-kind="bad"] .dot{background:var(--bad)}
+
+.codebar{display:flex;align-items:center;gap:10px;padding:8px 16px;background:var(--warn-soft);border-bottom:1px solid var(--line);flex-wrap:wrap;font-size:13px}
+.codebar input{padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);width:170px;font-family:var(--mono)}
+
+.tabs{display:flex;gap:4px;padding:8px 12px 0;border-bottom:1px solid var(--line);background:var(--card)}
+.tab{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;color:var(--soft);cursor:pointer;border-radius:6px 6px 0 0}
+.tab.active{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+.count{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--sunk);color:var(--soft);font-size:11px;text-align:center;margin-left:2px}
+
+.shell{display:grid;grid-template-columns:var(--side) minmax(0,1fr);flex:1;min-height:0}
+.side{border-right:1px solid var(--line);background:var(--card);overflow:auto;padding:16px}
+.chatpane{display:flex;flex-direction:column;min-height:0;min-width:0}
+
+label{display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--soft)}
+input:not([type=file]),textarea,select{padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);width:100%}
+textarea{resize:vertical;min-height:38px;line-height:1.45}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid2 .wide{grid-column:1/-1}
+.row{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+.btn{padding:7px 14px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;font-weight:600}
+.btn.ghost{background:transparent;color:var(--accent)}
+.btn:disabled{opacity:.5;cursor:default}
+.tiny{padding:3px 9px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--soft);cursor:pointer;font-size:12px}
+.tiny.danger{color:var(--bad);border-color:var(--bad-soft)}
+.asbtn{display:inline-block;flex-direction:row;cursor:pointer}
+#resumeText{font-family:var(--mono);font-size:12.5px;min-height:260px}
+
+.applist{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.app{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);cursor:pointer}
+.app.selected{border-color:var(--accent);background:var(--accent-soft)}
+.app .who{flex:1;min-width:0}
+.app .who b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.app .who span{color:var(--soft);font-size:12.5px}
+.pill{font-size:11px;padding:2px 8px;border-radius:9px;background:var(--sunk);color:var(--soft);white-space:nowrap}
+.pill[data-s="Applied"]{background:var(--accent-soft);color:var(--accent)}
+.pill[data-s="Interview"],.pill[data-s="Offer"]{background:var(--ok-soft);color:var(--ok)}
+.pill[data-s="Rejected"],.pill[data-s="Withdrawn"]{background:var(--bad-soft);color:var(--bad)}
+.appform{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--paper)}
+.empty{color:var(--faint);font-size:13px;padding:14px;border:1px dashed var(--line);border-radius:8px;text-align:center}
+
+.chathead{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.chathead h2{flex:1}
+.context{display:inline-flex;align-items:center;gap:8px;padding:3px 6px 3px 10px;border-radius:9px;background:var(--accent-soft);color:var(--accent);font-size:12.5px}
+.messages{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px;min-height:0}
+.msg{max-width:min(760px,92%);padding:10px 14px;border-radius:12px;position:relative;word-wrap:break-word;overflow-wrap:anywhere}
+.msg.user{align-self:flex-end;background:var(--accent);color:#fff;white-space:pre-wrap}
+.msg.assistant{align-self:flex-start;background:var(--card);border:1px solid var(--line)}
+.msg.note{align-self:center;background:var(--warn-soft);color:var(--warn);font-size:13px;max-width:min(680px,92%)}
+.msg.note.bad{background:var(--bad-soft);color:var(--bad)}
+.msg p{margin:0 0 8px}.msg p:last-child{margin:0}
+.msg ul,.msg ol{margin:4px 0 8px 20px;padding:0}
+.msg h4{margin:6px 0 4px;font-size:14px}
+.msg pre{background:var(--sunk);padding:8px 10px;border-radius:6px;overflow:auto;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap}
+.msg code{font-family:var(--mono);font-size:12.5px;background:var(--sunk);padding:1px 4px;border-radius:4px}
+.msg .copy{position:absolute;top:6px;right:6px;opacity:0;transition:opacity .15s}
+.msg:hover .copy,.msg:focus-within .copy{opacity:1}
+.thinking{color:var(--soft);font-style:italic}
+.thinking .t{font-family:var(--mono);font-style:normal;color:var(--faint);margin-left:6px;font-size:12px}
+.chips{display:flex;gap:6px;padding:0 16px 8px;flex-wrap:wrap}
+.chip{padding:4px 10px;border-radius:14px;border:1px solid var(--line);background:var(--card);color:var(--soft);cursor:pointer;font-size:12.5px}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.composer{display:flex;gap:8px;padding:10px 16px;border-top:1px solid var(--line);background:var(--card);align-items:flex-end}
+.composer textarea{flex:1;max-height:220px}
+.composer-actions{display:flex;gap:6px}
+.foot{padding:4px 16px 10px;background:var(--card);color:var(--faint);font-size:12px}
+.welcome{color:var(--soft);font-size:13.5px;max-width:560px;align-self:flex-start;padding:4px 2px}
+.welcome b{color:var(--ink)}
+.chat-only{display:none}
+
+@media (max-width:900px){
+  .shell{grid-template-columns:1fr}
+  .side{border-right:0;border-bottom:1px solid var(--line)}
+  .chat-only{display:inline-block}
+  body[data-tab="chat"] .side{display:none}
+  body:not([data-tab="chat"]) .chatpane{display:none}
+  .grid2{grid-template-columns:1fr}
+  .msg{max-width:96%}
+  .top{padding:8px 12px}
+}
+@media (min-width:901px){
+  .messages{padding:20px 28px}
+}
+</style>
+</head>
+<body data-tab="chat">
+
+<header class="top">
+  <div class="brand">
+    <span class="mark">JD</span>
+    <div><b>Job Desk</b><small>your job search, answered from your own computer</small></div>
+  </div>
+  <div class="status" id="status" data-kind="off">
+    <span class="dot"></span><span id="statusText">Looking for the desk…</span>
+    <button id="copyLink" class="tiny" hidden title="A link with the address and the code in it">Copy link for your phone</button>
+    <button id="retry" class="tiny" hidden>Look again</button>
+  </div>
+</header>
+
+<div class="codebar" id="codebar" hidden>
+  <label style="flex-direction:row;align-items:center;gap:8px">Access code <input id="codeInput" autocomplete="off" spellcheck="false" placeholder="from the desk's link"></label>
+  <button id="codeUse" class="btn">Use</button>
+  <span id="codeHint" class="hint">The desk printed it, and it is in the link it opened. It is in .env on the desk computer too.</span>
+</div>
+
+<nav class="tabs" id="tabs">
+  <button class="tab chat-only active" data-tab="chat">Chat</button>
+  <button class="tab" data-tab="profile">Profile</button>
+  <button class="tab" data-tab="resume">Résumé</button>
+  <button class="tab" data-tab="apps">Applications <span class="count" id="appCount">0</span></button>
+</nav>
+
+<main class="shell">
+  <section class="side" id="side">
+
+    <div class="panel" data-panel="profile">
+      <h2>Profile</h2>
+      <p class="lede">Sent with every question so drafts use real facts. Stays in this browser.</p>
+      <div class="grid2">
+        <label>Name<input data-p="name" autocomplete="name"></label>
+        <label>Email<input data-p="email" type="email" autocomplete="email"></label>
+        <label>Phone<input data-p="phone" autocomplete="tel"></label>
+        <label>City<input data-p="city" placeholder="City, Province"></label>
+        <label class="wide">Current or most recent title<input data-p="title"></label>
+        <label class="wide">Links, one per line<textarea data-p="links" rows="2" placeholder="LinkedIn, GitHub, portfolio…"></textarea></label>
+        <label class="wide">Summary, who you are in three lines<textarea data-p="summary" rows="3"></textarea></label>
+        <label class="wide">Notes for the assistant, standing rules it follows every time<textarea data-p="notes" rows="3" placeholder="e.g. Never say I am looking to relocate; I am available on site. Lead with tooling and performance work. Keep letters under 250 words."></textarea></label>
+      </div>
+      <p class="hint" id="profileSaved">&nbsp;</p>
+    </div>
+
+    <div class="panel" data-panel="resume" hidden>
+      <h2>Résumé</h2>
+      <p class="lede">Paste the plain text of your résumé. It goes with every question, so nothing gets invented.</p>
+      <textarea id="resumeText" placeholder="Paste your résumé here…"></textarea>
+      <div class="row">
+        <label class="tiny asbtn">Load a .txt or .md file<input type="file" id="resumeFile" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden></label>
+        <span class="hint" id="resumeCount"></span>
+        <button class="tiny" id="resumeClear">Clear</button>
+      </div>
+    </div>
+
+    <div class="panel" data-panel="apps" hidden>
+      <h2>Applications</h2>
+      <p class="lede">Pick one and the chat talks about it: the posting, the letter, the interview.</p>
+      <div class="applist" id="appList"></div>
+      <div class="row" style="margin-top:0">
+        <button class="btn" id="appNew">+ New application</button>
+        <button class="tiny" id="exportBtn" title="Profile, résumé, applications and chat as one JSON file">Export</button>
+        <label class="tiny asbtn">Import<input type="file" id="importFile" accept="application/json,.json" hidden></label>
+      </div>
+      <form id="appForm" class="appform" hidden>
+        <input type="hidden" id="appId">
+        <div class="grid2">
+          <label>Company<input id="appCompany" required></label>
+          <label>Role<input id="appRole" required></label>
+          <label class="wide">Link to the posting<input id="appLink" type="url" placeholder="https://"></label>
+          <label>Status<select id="appStatus"><option>Saved</option><option>Applied</option><option>Interview</option><option>Offer</option><option>Rejected</option><option>Withdrawn</option></select></label>
+          <label>Date<input id="appDate" type="date"></label>
+          <label class="wide">Posting, paste the job description<textarea id="appPosting" rows="7"></textarea></label>
+          <label class="wide">Notes<textarea id="appNotes" rows="2" placeholder="Who you spoke to, what they said, what to follow up…"></textarea></label>
+        </div>
+        <div class="row">
+          <button type="submit" class="btn">Save</button>
+          <button type="button" class="btn ghost" id="appCancel">Cancel</button>
+          <button type="button" class="tiny danger" id="appDelete" hidden>Delete</button>
+        </div>
+      </form>
+    </div>
+
+  </section>
+
+  <section class="chatpane" data-panel="chat">
+    <div class="chathead">
+      <h2>Chat</h2>
+      <span class="context" id="context" hidden><span>About <b id="contextName"></b></span><button class="tiny" id="contextClear" title="Stop talking about this application">✕</button></span>
+      <button class="tiny" id="newChat">New chat</button>
+    </div>
+    <div class="messages" id="messages" aria-live="polite"></div>
+    <div class="chips" id="chips">
+      <button class="chip" data-needs-app data-prompt="Draft a cover letter for this application.">Cover letter</button>
+      <button class="chip" data-needs-app data-prompt="In five bullets: what in my résumé matches this posting, and the one gap I should address head-on.">Why I fit</button>
+      <button class="chip" data-needs-app data-prompt="Rewrite my résumé summary to fit this posting, using only what my résumé supports.">Tailor my summary</button>
+      <button class="chip" data-needs-app data-prompt="Give me the six questions this interview is most likely to ask, each with a two-line answer drawn from my background.">Interview prep</button>
+      <button class="chip" data-needs-app data-prompt="Draft a short follow-up email for this application.">Follow-up email</button>
+      <button class="chip" data-prompt="Read my résumé and tell me, bluntly, the three things a hiring manager would push back on.">Critique my résumé</button>
+    </div>
+    <form class="composer" id="composer">
+      <textarea id="input" rows="2" placeholder="Ask, or say what to draft… (Enter sends, Shift+Enter for a new line)"></textarea>
+      <div class="composer-actions">
+        <button type="button" id="stop" class="btn ghost" hidden>Stop</button>
+        <button type="submit" id="send" class="btn">Send</button>
+      </div>
+    </form>
+    <div class="foot" id="foot">&nbsp;</div>
+  </section>
+</main>
+
+<script>
+/* ------------------------------------------------------------------
+   Job Desk - one page, no build.
+
+   Everything you type lives in this browser's localStorage. The only thing
+   that leaves is the question you send, with your profile, résumé and the
+   selected application attached, to the desk: desk.py on your own computer,
+   which asks the Claude signed in there.
+   ------------------------------------------------------------------ */
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem("jd." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("jd." + k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem("jd." + k); } catch {} }
+};
+
+let profile = LS.get("profile", {});
+let resume = LS.get("resume", "");
+let apps = LS.get("apps", []);
+let chat = LS.get("chat", []);
+let selectedApp = LS.get("selected", null);
+let code = LS.get("code", "");
+
+/* ---------- finding the desk ----------
+ * Candidates in order of trust, every one probed with /health and none
+ * believed until it answers. A quick tunnel changes its hostname each run and
+ * the old one is handed to somebody else, so a remembered address is a guess. */
+const DESK_PORT = 8790;
+const LOCAL_RE = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i;
+const servedByDesk = LOCAL_RE.test(location.origin);
+let desk = { url: "", kind: "", info: null };
+let finding = null;
+
+function linkParams() {
+  const p = new URLSearchParams(location.hash.replace(/^#/, ""));
+  return { desk: (p.get("desk") || "").trim(), code: (p.get("code") || "").trim() };
+}
+function tidy(u) { return String(u || "").trim().replace(/\/+$/, ""); }
+function acceptable(u) { return /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(u) || LOCAL_RE.test(u); }
+
+async function health(url, ms) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
+  try {
+    const r = await fetch(url + "/health", { cache: "no-store", signal: c.signal });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j && j.ok && j.provider ? j : null;
+  } catch { return null; } finally { clearTimeout(t); }
+}
+
+async function publishedDesk() {
+  if (servedByDesk) return "";
+  try {
+    // The query string keeps every CDN out of the way: fresh from origin, every time.
+    const r = await fetch("desk.json?" + Date.now(), { cache: "no-store" });
+    if (!r.ok) return "";
+    const j = await r.json();
+    return tidy(j && j.url);
+  } catch { return ""; }
+}
+
+async function findDesk() {
+  if (finding) return finding;
+  finding = (async () => {
+    const link = linkParams();
+    if (link.code && link.code !== code) { code = link.code; LS.set("code", code); }
+    const cands = [];
+    if (servedByDesk) cands.push({ url: location.origin, kind: "this computer" });
+    if (link.desk && acceptable(tidy(link.desk))) cands.push({ url: tidy(link.desk), kind: "the link" });
+    const remembered = tidy(LS.get("desk", ""));
+    if (remembered && acceptable(remembered)) cands.push({ url: remembered, kind: "last time" });
+    const pub = await publishedDesk();
+    if (pub && acceptable(pub)) cands.push({ url: pub, kind: "published" });
+    if (!servedByDesk) cands.push({ url: "http://127.0.0.1:" + DESK_PORT, kind: "this computer" });
+
+    const seen = new Set();
+    const list = cands.filter(c => !seen.has(c.url) && seen.add(c.url));
+    const results = await Promise.all(list.map(c => health(c.url, LOCAL_RE.test(c.url) ? 2500 : 6000)));
+    const i = results.findIndex(Boolean);
+    if (i >= 0) {
+      desk = { url: list[i].url, kind: list[i].kind, info: results[i] };
+      if (!LOCAL_RE.test(desk.url)) LS.set("desk", desk.url);
+    } else {
+      desk = { url: "", kind: "", info: null };
+    }
+    renderStatus();
+    return !!desk.url;
+  })();
+  try { return await finding; } finally { finding = null; }
+}
+
+function isTunnel() { return desk.url && !LOCAL_RE.test(desk.url); }
+
+function renderStatus(kind, text) {
+  const st = $("#status");
+  const copy = $("#copyLink");
+  const retry = $("#retry");
+  copy.hidden = true; retry.hidden = true;
+  if (kind) { st.dataset.kind = kind; $("#statusText").textContent = text; return; }
+  if (!desk.url) {
+    st.dataset.kind = "off";
+    $("#statusText").textContent = "Desk offline. On your computer, run Desk.cmd (py desk.py).";
+    retry.hidden = false;
+  } else if (desk.info && desk.info.signedIn === false) {
+    st.dataset.kind = "bad";
+    $("#statusText").textContent = "Desk is up, but its Claude is signed out. On the desk computer: py desk.py login";
+  } else {
+    st.dataset.kind = "on";
+    const where = isTunnel() ? "your computer, via " + desk.url.replace(/^https:\/\//, "") : "this computer";
+    $("#statusText").textContent = "Connected to " + where;
+    if (isTunnel() && code) copy.hidden = false;
+  }
+  $("#foot").textContent = desk.url
+    ? "Answering from " + (isTunnel() ? "your computer through a tunnel" : "this computer") + " · model " + (desk.info && desk.info.model || "?") + " · nothing you type is stored anywhere but this browser"
+    : "Nothing you type leaves this browser until a desk is connected.";
+}
+
+function shareLink() {
+  return location.origin + location.pathname + "#desk=" + encodeURIComponent(desk.url) + "&code=" + encodeURIComponent(code);
+}
+
+/* re-check on a timer: quickly while offline, occasionally while online */
+let ticks = 0;
+setInterval(async () => {
+  ticks++;
+  if (sending) return;
+  if (!desk.url) { await findDesk(); return; }
+  if (ticks % 4 === 0) {
+    const h = await health(desk.url, 6000);
+    if (h) { desk.info = h; renderStatus(); }
+    else { desk = { url: "", kind: "", info: null }; renderStatus(); await findDesk(); }
+  }
+}, 15000);
+window.addEventListener("hashchange", () => { desk = { url: "", kind: "", info: null }; findDesk(); });
+$("#retry").addEventListener("click", () => { renderStatus("busy", "Looking for the desk…"); findDesk(); });
+$("#copyLink").addEventListener("click", async () => {
+  const link = shareLink();
+  try { await navigator.clipboard.writeText(link); toast("Link copied. Open it on your phone; it carries the address and the code."); }
+  catch { window.prompt("Copy this link:", link); }
+});
+
+/* ---------- the access code ---------- */
+function askCode(hint) {
+  $("#codebar").hidden = false;
+  if (hint) $("#codeHint").textContent = hint;
+  $("#codeInput").value = code || "";
+  $("#codeInput").focus();
+  renderStatus("code", "The desk wants its access code.");
+}
+$("#codeUse").addEventListener("click", () => {
+  code = $("#codeInput").value.trim();
+  LS.set("code", code);
+  $("#codebar").hidden = true;
+  renderStatus();
+  if (pendingAfterCode) { const t = pendingAfterCode; pendingAfterCode = null; send(t); }
+});
+$("#codeInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#codeUse").click(); } });
+let pendingAfterCode = null;
+
+/* ---------- tabs ---------- */
+function go(tab) {
+  document.body.dataset.tab = tab;
+  $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  $$(".side .panel").forEach(p => p.hidden = p.dataset.panel !== tab && tab !== "chat" ? true : (tab === "chat" ? p.dataset.panel !== lastSide : false));
+  if (tab !== "chat") lastSide = tab;
+  LS.set("tab", tab);
+}
+let lastSide = LS.get("side", "profile");
+$$(".tab").forEach(b => b.addEventListener("click", () => { go(b.dataset.tab); if (b.dataset.tab !== "chat") LS.set("side", b.dataset.tab); }));
+
+/* ---------- profile ---------- */
+$$("[data-p]").forEach(el => {
+  el.value = profile[el.dataset.p] || "";
+  el.addEventListener("input", () => {
+    profile[el.dataset.p] = el.value;
+    LS.set("profile", profile);
+    $("#profileSaved").textContent = "Saved.";
+    clearTimeout(el._t); el._t = setTimeout(() => $("#profileSaved").innerHTML = "&nbsp;", 1200);
+  });
+});
+
+/* ---------- résumé ---------- */
+const resumeBox = $("#resumeText");
+resumeBox.value = resume;
+function resumeCount() { $("#resumeCount").textContent = resume ? resume.length.toLocaleString() + " characters" : "nothing saved yet"; }
+resumeCount();
+resumeBox.addEventListener("input", () => { resume = resumeBox.value; LS.set("resume", resume); resumeCount(); });
+$("#resumeFile").addEventListener("change", async (e) => {
+  const f = e.target.files && e.target.files[0]; if (!f) return;
+  resume = (await f.text()).replace(/\r\n/g, "\n"); resumeBox.value = resume; LS.set("resume", resume); resumeCount();
+  toast("Loaded " + f.name); e.target.value = "";
+});
+$("#resumeClear").addEventListener("click", () => { if (!resume || confirm("Clear the saved résumé text?")) { resume = ""; resumeBox.value = ""; LS.set("resume", ""); resumeCount(); } });
+
+/* ---------- applications ---------- */
+function currentApp() { return apps.find(a => a.id === selectedApp) || null; }
+function renderApps() {
+  const list = $("#appList");
+  list.innerHTML = "";
+  $("#appCount").textContent = apps.length;
+  if (!apps.length) { list.innerHTML = '<div class="empty">No applications yet. Add one, paste the posting, and the chat can draft against it.</div>'; }
+  for (const a of [...apps].sort((x, y) => (y.date || "").localeCompare(x.date || "") || (y.added || 0) - (x.added || 0))) {
+    const row = document.createElement("div");
+    row.className = "app" + (a.id === selectedApp ? " selected" : "");
+    row.tabIndex = 0;
+    row.innerHTML = '<div class="who"><b></b><span></span></div><span class="pill"></span><button class="tiny">Edit</button>';
+    row.querySelector("b").textContent = a.company || "(no company)";
+    row.querySelector("span").textContent = [a.role, a.date].filter(Boolean).join(" · ");
+    const pill = row.querySelector(".pill"); pill.textContent = a.status || "Saved"; pill.dataset.s = a.status || "Saved";
+    row.addEventListener("click", (e) => { if (e.target.tagName === "BUTTON") return; selectedApp = a.id === selectedApp ? null : a.id; LS.set("selected", selectedApp); renderApps(); renderContext(); });
+    row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); row.click(); } });
+    row.querySelector("button").addEventListener("click", () => editApp(a));
+    list.appendChild(row);
+  }
+  renderContext();
+}
+function renderContext() {
+  const a = currentApp();
+  $("#context").hidden = !a;
+  if (a) $("#contextName").textContent = [a.company, a.role].filter(Boolean).join(" · ");
+}
+function editApp(a) {
+  $("#appForm").hidden = false;
+  $("#appId").value = a ? a.id : "";
+  $("#appCompany").value = a ? a.company || "" : "";
+  $("#appRole").value = a ? a.role || "" : "";
+  $("#appLink").value = a ? a.link || "" : "";
+  $("#appStatus").value = a ? a.status || "Saved" : "Saved";
+  $("#appDate").value = a ? a.date || "" : new Date().toISOString().slice(0, 10);
+  $("#appPosting").value = a ? a.posting || "" : "";
+  $("#appNotes").value = a ? a.notes || "" : "";
+  $("#appDelete").hidden = !a;
+  $("#appCompany").focus();
+}
+$("#appNew").addEventListener("click", () => editApp(null));
+$("#appCancel").addEventListener("click", () => { $("#appForm").hidden = true; });
+$("#appForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const id = $("#appId").value || ("a" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+  const rec = { id, company: $("#appCompany").value.trim(), role: $("#appRole").value.trim(), link: $("#appLink").value.trim(),
+    status: $("#appStatus").value, date: $("#appDate").value, posting: $("#appPosting").value.trim(), notes: $("#appNotes").value.trim(),
+    added: (apps.find(a => a.id === id) || {}).added || Date.now() };
+  const i = apps.findIndex(a => a.id === id);
+  if (i >= 0) apps[i] = rec; else { apps.push(rec); selectedApp = id; LS.set("selected", id); }
+  LS.set("apps", apps);
+  $("#appForm").hidden = true;
+  renderApps();
+});
+$("#appDelete").addEventListener("click", () => {
+  const id = $("#appId").value; const a = apps.find(x => x.id === id);
+  if (!a || !confirm("Delete " + (a.company || "this application") + "?")) return;
+  apps = apps.filter(x => x.id !== id); if (selectedApp === id) { selectedApp = null; LS.set("selected", null); }
+  LS.set("apps", apps); $("#appForm").hidden = true; renderApps();
+});
+$("#contextClear").addEventListener("click", () => { selectedApp = null; LS.set("selected", null); renderApps(); });
+
+$("#exportBtn").addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify({ exported: new Date().toISOString(), profile, resume, apps, chat }, null, 2)], { type: "application/json" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "job-desk-" + new Date().toISOString().slice(0, 10) + ".json";
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$("#importFile").addEventListener("change", async (e) => {
+  const f = e.target.files && e.target.files[0]; if (!f) return;
+  try {
+    const j = JSON.parse(await f.text());
+    if (!j || typeof j !== "object") throw new Error("not an export");
+    if (!confirm("Replace what is in this browser with " + f.name + "?")) return;
+    if (j.profile && typeof j.profile === "object") { profile = j.profile; LS.set("profile", profile); $$("[data-p]").forEach(el => el.value = profile[el.dataset.p] || ""); }
+    if (typeof j.resume === "string") { resume = j.resume; LS.set("resume", resume); resumeBox.value = resume; resumeCount(); }
+    if (Array.isArray(j.apps)) { apps = j.apps.filter(a => a && a.id); LS.set("apps", apps); }
+    if (Array.isArray(j.chat)) { chat = j.chat.filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string"); LS.set("chat", chat); renderChat(); }
+    renderApps(); toast("Imported " + f.name);
+  } catch (err) { toast("Could not import that file: " + err.message, true); }
+  e.target.value = "";
+});
+
+/* ---------- the chat ---------- */
+let sending = false;
+let ctl = null;
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function inline(s) {
+  s = esc(s);
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<i>$2</i>");
+  s = s.replace(/\bhttps?:\/\/[^\s<]+[^\s<.,;:)]/g, m => '<a href="' + m + '" target="_blank" rel="noopener">' + m + "</a>");
+  return s;
+}
+function md(text) {
+  const lines = String(text).replace(/\r\n/g, "\n").split("\n");
+  const out = []; let para = []; let i = 0;
+  const flush = () => { if (para.length) { out.push("<p>" + para.map(inline).join("<br>") + "</p>"); para = []; } };
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^```/.test(l)) { flush(); const buf = []; i++; while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]); i++; out.push("<pre>" + esc(buf.join("\n")) + "</pre>"); continue; }
+    if (/^\s*[-*•]\s+/.test(l)) { flush(); const items = []; while (i < lines.length && /^\s*[-*•]\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*[-*•]\s+/, "")); out.push("<ul>" + items.map(x => "<li>" + inline(x) + "</li>").join("") + "</ul>"); continue; }
+    if (/^\s*\d+[.)]\s+/.test(l)) { flush(); const items = []; while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*\d+[.)]\s+/, "")); out.push("<ol>" + items.map(x => "<li>" + inline(x) + "</li>").join("") + "</ol>"); continue; }
+    if (/^#{1,4}\s+/.test(l)) { flush(); out.push("<h4>" + inline(l.replace(/^#+\s+/, "")) + "</h4>"); i++; continue; }
+    if (!l.trim()) { flush(); i++; continue; }
+    para.push(l); i++;
+  }
+  flush();
+  return out.join("");
+}
+
+function bubble(role, text) {
+  const el = document.createElement("div");
+  el.className = "msg " + role;
+  if (role === "assistant") {
+    el.innerHTML = md(text) + '<button class="tiny copy" title="Copy the text">Copy</button>';
+    el.querySelector(".copy").addEventListener("click", async (e) => {
+      try { await navigator.clipboard.writeText(text); e.target.textContent = "Copied"; setTimeout(() => e.target.textContent = "Copy", 1200); } catch {}
+    });
+  } else {
+    el.textContent = text;
+  }
+  $("#messages").appendChild(el);
+  return el;
+}
+function note(text, bad) {
+  const el = document.createElement("div");
+  el.className = "msg note" + (bad ? " bad" : "");
+  el.textContent = text;
+  $("#messages").appendChild(el);
+  scrollDown();
+  return el;
+}
+function toast(text, bad) { note(text, bad); }
+function scrollDown() { const m = $("#messages"); m.scrollTop = m.scrollHeight; }
+
+function renderChat() {
+  const m = $("#messages");
+  m.innerHTML = "";
+  if (!chat.length) {
+    const w = document.createElement("div");
+    w.className = "welcome";
+    w.innerHTML = "<b>This is your desk.</b> Fill in the profile and paste your résumé once; pick an application and paste its posting. Then ask for the letter, the tailored summary, the interview prep, the follow-up. Drafts come back in your voice, from your facts, with gaps marked <code>[like this]</code> instead of invented.";
+    m.appendChild(w);
+  }
+  for (const t of chat) bubble(t.role, t.content);
+  scrollDown();
+}
+
+function setSending(on) {
+  sending = on;
+  $("#send").disabled = on;
+  $("#stop").hidden = !on;
+  $("#input").disabled = on;
+}
+
+async function send(text) {
+  text = (text || "").trim();
+  if (!text || sending) return;
+  if (!desk.url) {
+    renderStatus("busy", "Looking for the desk…");
+    if (!(await findDesk())) { note("No desk is reachable. On your computer, run Desk.cmd (py desk.py) and this page will connect by itself.", true); return; }
+  }
+  chat.push({ role: "user", content: text });
+  chat = chat.slice(-60); LS.set("chat", chat);
+  if (!chat.length || chat.length === 1) $("#messages").innerHTML = "";
+  bubble("user", text);
+  $("#input").value = ""; autosize();
+  const think = document.createElement("div");
+  think.className = "msg assistant thinking";
+  think.innerHTML = "Thinking<span class=\"t\">0s</span>";
+  $("#messages").appendChild(think); scrollDown();
+  const t0 = Date.now();
+  const timer = setInterval(() => { think.querySelector(".t").textContent = Math.round((Date.now() - t0) / 1000) + "s"; }, 1000);
+  setSending(true);
+  renderStatus("busy", "Asking your desk…");
+  ctl = new AbortController();
+  try {
+    const r = await fetch(desk.url + "/chat", {
+      method: "POST", signal: ctl.signal,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: chat.slice(-24), profile, resume, application: currentApp() || undefined, code })
+    });
+    const j = await r.json().catch(() => null);
+    think.remove();
+    if (!r.ok || !j || typeof j.text !== "string") {
+      const ecode = j && j.error && j.error.code || "";
+      const msg = j && j.error && j.error.message || ("The desk answered " + r.status + ".");
+      chat.pop(); LS.set("chat", chat);            // the question did not land; keep it in the box
+      $("#input").value = text; autosize();
+      if (ecode === "code_required" || ecode === "code_refused") { pendingAfterCode = text; askCode(msg); return; }
+      note(msg, true);
+      if (ecode === "signed_out") { desk.info = Object.assign({}, desk.info, { signedIn: false }); }
+      return;
+    }
+    chat.push({ role: "assistant", content: j.text }); LS.set("chat", chat);
+    bubble("assistant", j.text); scrollDown();
+    if (desk.info) desk.info.signedIn = true;
+  } catch (e) {
+    think.remove();
+    chat.pop(); LS.set("chat", chat);
+    $("#input").value = text; autosize();
+    if (e && e.name === "AbortError") { note("Stopped."); }
+    else { note("Lost the desk while asking (" + (e && e.message || e) + "). Looking for it again.", true); desk = { url: "", kind: "", info: null }; findDesk(); }
+  } finally {
+    clearInterval(timer); setSending(false); ctl = null; renderStatus(); $("#input").focus();
+  }
+}
+
+$("#composer").addEventListener("submit", (e) => { e.preventDefault(); send($("#input").value); });
+$("#stop").addEventListener("click", () => { if (ctl) ctl.abort(); });
+$("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send($("#input").value); } });
+function autosize() { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(220, t.scrollHeight) + "px"; }
+$("#input").addEventListener("input", autosize);
+$("#newChat").addEventListener("click", () => { if (!chat.length || confirm("Start a new chat? The old one is cleared from this browser.")) { chat = []; LS.set("chat", chat); renderChat(); } });
+$$(".chip").forEach(c => c.addEventListener("click", () => {
+  if (c.hasAttribute("data-needs-app") && !currentApp()) { toast("Pick an application first, so the draft has a posting to work from."); go("apps"); return; }
+  $("#input").value = c.dataset.prompt; autosize(); send(c.dataset.prompt);
+}));
+
+/* ---------- start ---------- */
+renderApps();
+renderChat();
+go(window.innerWidth <= 900 ? (LS.get("tab", "chat")) : "chat");
+if (window.innerWidth > 900) { $$(".side .panel").forEach(p => p.hidden = p.dataset.panel !== lastSide); $$(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === lastSide)); }
+renderStatus("busy", "Looking for the desk…");
+findDesk();
+</script>
+</body>
+</html>

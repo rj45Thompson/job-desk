@@ -1,0 +1,7 @@
+.env
+cloudflared.exe
+cloudflared.exe.part
+*.log
+open-me.txt
+__pycache__/
+.pytest_cache/
