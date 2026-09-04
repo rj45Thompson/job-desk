@@ -1,0 +1,15 @@
+HTTP/1.1 200 OK
+Date: Thu, 03 Sep 2026 23:55:04 GMT
+Content-Type: application/json; charset=utf-8
+Content-Length: 219
+Connection: keep-alive
+CF-Ray: a358aeb9fea79236-SEA
+CF-Cache-Status: DYNAMIC
+Access-Control-Allow-Origin: https://rj45thompson.github.io
+Cache-Control: no-store
+Server: cloudflare
+Vary: Origin
+access-control-allow-headers: Content-Type
+access-control-allow-methods: GET, POST, OPTIONS
+access-control-max-age: 600
+

@@ -17,6 +17,7 @@ One file that does the whole server side:
     py desk.py check        what works and what does not; nothing is started
     py desk.py check --ask  ...and put one real question to Claude
     py desk.py login        sign the Claude CLI in (a browser opens, once)
+    py desk.py down         after a desk died: kill its tunnel, clear the published address
     py desk.py test         the test suite
 
 Python 3.10+, standard library only. Needs the `claude` CLI. `cloudflared.exe`
@@ -754,6 +755,40 @@ def port_free(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
+def reap_stale_tunnels(port: int) -> int:
+    """
+    cloudflared left behind by a desk that was killed rather than stopped.
+
+    Only ones pointed at this port, which are only ever ours. A dead desk's
+    tunnel keeps a hostname alive that answers nothing, and the published
+    address then points at it - this is the "stuck" that keeps happening.
+    """
+    if os.name != "nt":
+        return 0
+    ps = ("$n=0; Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | "
+          f"Where-Object {{ $_.CommandLine -like '*127.0.0.1:{port}*' }} | "
+          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $n++ }; $n")
+    try:
+        p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                           capture_output=True, text=True, timeout=40)
+        return int(((p.stdout or "").strip().splitlines() or ["0"])[-1] or 0)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 0
+
+
+def cmd_down(cfg: dict) -> int:
+    """After a desk died without cleaning up: kill its tunnel, clear the published address."""
+    port = int(cfg["DESK_PORT"])
+    if not port_free(port):
+        log(f"a desk is still listening on port {port} - stop it with Ctrl-C in its own window first")
+        return 1
+    n = reap_stale_tunnels(port)
+    log(f"stopped {n} orphaned cloudflared process(es)" if n else "no orphaned cloudflared running")
+    ok, why = publish(cfg, "")
+    log("published address cleared" if ok else f"could not clear the published address - {why}")
+    return 0 if ok else 1
+
+
 def cmd_check(cfg: dict, ask: bool) -> int:
     problems = 0
     print(f"job-desk {VERSION}   {ROOT}")
@@ -809,6 +844,10 @@ def cmd_up(cfg: dict, tunnel_wanted: bool, open_browser: bool) -> int:
     if not port_free(port):
         log(f"port {port} is already in use - is a desk already running? (py desk.py check)")
         return 1
+    if tunnel_wanted:
+        n = reap_stale_tunnels(port)
+        if n:
+            log(f"stopped {n} orphaned cloudflared process(es) left by an earlier desk")
     auth = claude_auth(cfg)
     Desk.state.update({"auth": auth, "tunnel": "", "since": ""})
     log(f"job-desk {VERSION}   model {cfg['DESK_MODEL']}   claude "
@@ -892,6 +931,7 @@ def main(argv: list[str] | None = None) -> int:
     chk = sub.add_parser("check", help="what works and what does not")
     chk.add_argument("--ask", action="store_true", help="also put one real question to Claude")
     sub.add_parser("login", help="sign the Claude CLI in")
+    sub.add_parser("down", help="after a desk died: kill its tunnel, clear the published address")
     sub.add_parser("test", help="run the test suite")
     args = ap.parse_args(argv)
     cfg = load_config()
@@ -900,6 +940,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_check(cfg, args.ask)
     if cmd == "login":
         return cmd_login(cfg)
+    if cmd == "down":
+        return cmd_down(cfg)
     if cmd == "test":
         return cmd_test()
     if cmd == "serve":

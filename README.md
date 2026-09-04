@@ -42,8 +42,14 @@ is used.
 py desk.py check          what works and what does not, nothing started
 py desk.py check --ask    ...and one real question through the whole chain
 py desk.py serve          this machine only, no tunnel
+py desk.py down           after a desk was killed rather than stopped: ends its
+                          orphaned tunnel and clears the published address
 py desk.py test           the test suite (no network, no real Claude)
 ```
+
+A desk that starts also ends any orphaned tunnel on its port from an earlier
+desk, so a crash never leaves the page pointed at an address that answers
+nothing.
 
 ## How the page finds the desk
 
