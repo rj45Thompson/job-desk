@@ -280,6 +280,36 @@ class Publish(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("refused", why)
 
+    def test_token_from_env_file_reaches_gh(self):
+        self.assertNotIn("GH_TOKEN", desk.gh_env(self.cfg))
+        env = desk.gh_env(dict(self.cfg, GITHUB_TOKEN="gho_test"))
+        self.assertEqual(env["GH_TOKEN"], "gho_test")
+        calls, run = self._run([self.P(1), self.P(0, "{}")])
+        desk.publish(dict(self.cfg, GITHUB_TOKEN="gho_test"), "https://a.trycloudflare.com", run=run)
+        self.assertEqual(calls[0][1]["env"]["GH_TOKEN"], "gho_test")
+        self.assertEqual(calls[1][1]["env"]["GH_TOKEN"], "gho_test")
+
+    def test_keep_gh_token_copies_it_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = Path(d) / ".env"
+            env.write_text("DESK_CODE=abcd-1234-ef56\n", encoding="utf-8")
+            calls, run = self._run([self.P(0, "gho_fromkeyring\n")])
+            self.assertTrue(desk.keep_gh_token(desk.load_config(env), env, run=run))
+            self.assertEqual(calls[0][0][1:], ["auth", "token"])
+            cfg = desk.load_config(env)
+            self.assertEqual(cfg["GITHUB_TOKEN"], "gho_fromkeyring")
+            self.assertEqual(cfg["DESK_CODE"], "abcd-1234-ef56")
+            # already there: nothing runs, nothing is written twice
+            calls, run = self._run([])
+            self.assertFalse(desk.keep_gh_token(cfg, env, run=run))
+            self.assertEqual(calls, [])
+            self.assertEqual(env.read_text(encoding="utf-8").count("GITHUB_TOKEN="), 1)
+            # gh cannot read its keyring (the task context): nothing is written
+            env2 = Path(d) / "two.env"
+            calls, run = self._run([self.P(1, "")])
+            self.assertFalse(desk.keep_gh_token(desk.load_config(env2), env2, run=run))
+            self.assertFalse(env2.exists())
+
 
 class Server(unittest.TestCase):
     """The real handler on a real socket, with the fake CLI behind it."""
@@ -402,6 +432,19 @@ class Server(unittest.TestCase):
         self.assertIsNone(h.get("Access-Control-Allow-Origin"))
         _, _, h = self.call("GET", "/health", headers={"Origin": "http://localhost:5500"})
         self.assertEqual(h.get("Access-Control-Allow-Origin"), "http://localhost:5500")
+
+    def test_shutdown_is_for_this_computer_only(self):
+        desk.Desk.stop_event.clear()
+        try:
+            st, j, _ = self.call("POST", "/shutdown", {}, {"CF-Ray": "x"})
+            self.assertEqual(st, 403)
+            self.assertFalse(desk.Desk.stop_event.is_set())
+            st, j, _ = self.call("POST", "/shutdown", {})
+            self.assertEqual(st, 200)
+            self.assertTrue(j["stopping"])
+            self.assertTrue(desk.Desk.stop_event.is_set())
+        finally:
+            desk.Desk.stop_event.clear()
 
     def test_static_and_404(self):
         st, j, _ = self.call("GET", "/nope")

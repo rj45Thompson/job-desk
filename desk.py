@@ -68,6 +68,7 @@ DEFAULTS = {
     "CLAUDE_CLI": "",
     "CLOUDFLARED": "",
     "CLAUDE_TIMEOUT": "240",
+    "GITHUB_TOKEN": "",
 }
 
 # ─────────────────────────── settings ────────────────────────────
@@ -403,6 +404,7 @@ class Desk(http.server.BaseHTTPRequestHandler):
     answer = staticmethod(ask_claude)        # swapped for a fake in the tests
     limiter = Limiter()
     slots = threading.BoundedSemaphore(2)    # answers in flight at once
+    stop_event = threading.Event()           # set by POST /shutdown from this computer
     STATIC = {"/": "index.html", "/index.html": "index.html"}
 
     def log_message(self, fmt, *args):      # we do our own
@@ -516,6 +518,15 @@ class Desk(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path == "/shutdown":
+            # How `py desk.py down` stops a desk that has no console to Ctrl-C
+            # in. Only this computer may ask; the tunnel never can.
+            if not self._is_local():
+                return self._fail("Only this computer can stop the desk.", "forbidden", 403)
+            log("stop asked for by this computer")
+            self._send({"ok": True, "stopping": True})
+            self.stop_event.set()
+            return
         if path != "/chat":
             return self._fail("Not found.", "not_found", 404)
         try:
@@ -698,33 +709,79 @@ class Tunnel:
 # ──────────────────── publishing the address ─────────────────────
 
 
-def gh_status() -> tuple[bool, str]:
+def gh_env(cfg: dict) -> dict:
+    """
+    gh's environment. With GITHUB_TOKEN in .env it is handed over as GH_TOKEN,
+    which gh takes in preference to its keyring - the keyring is what a desk
+    started by the logon task cannot read (measured 2026-09-03: same user,
+    same APPDATA, `gh auth status` still says "not logged into any hosts").
+    """
+    env = dict(os.environ)
+    tok = (cfg.get("GITHUB_TOKEN") or "").strip()
+    if tok:
+        env["GH_TOKEN"] = tok
+    return env
+
+
+def gh_status(cfg: dict) -> tuple[bool, str]:
     gh = shutil.which("gh")
     if not gh:
         return False, "gh is not installed"
     p = subprocess.run([gh, "auth", "status"], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=45)
+                       encoding="utf-8", errors="replace", timeout=45, env=gh_env(cfg))
     if p.returncode != 0:
         return False, "gh is not signed in (run: gh auth login)"
-    return True, "signed in"
+    return True, "signed in (" + ("token in .env" if cfg.get("GITHUB_TOKEN") else "keyring") + ")"
+
+
+def keep_gh_token(cfg: dict, env_file: Path = ENV_FILE, run=subprocess.run) -> bool:
+    """
+    Copy gh's token into .env, once, from a context where gh can read its
+    keyring - an ordinary console. A desk the logon task starts later then
+    publishes with it. Nothing to create and nothing to paste; .env is
+    gitignored and never leaves this machine.
+    """
+    if (cfg.get("GITHUB_TOKEN") or "").strip():
+        return False
+    gh = shutil.which("gh")
+    if not gh:
+        return False
+    try:
+        p = run([gh, "auth", "token"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=45)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    tok = (p.stdout or "").strip()
+    if p.returncode != 0 or not tok or any(c.isspace() for c in tok):
+        return False
+    existing = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    env_file.write_text(existing + "# gh's token, copied here so a desk started by the logon task can "
+                        "publish the address\n# (gh cannot read its keyring there). "
+                        "Revoke at github.com/settings/applications if ever needed.\n"
+                        f"GITHUB_TOKEN={tok}\n", encoding="utf-8")
+    return True
 
 
 def publish(cfg: dict, url: str, run=subprocess.run) -> tuple[bool, str]:
     """
     Write {url} into desk.json on GitHub through the signed-in gh CLI.
 
-    No token to make, no token to store: gh already has one. Pages rebuilds
-    in well under a minute and a page that is already open picks the address
-    up on its next look. An empty url takes the page back to "desk is off".
+    No token to make: gh already has one, and .env carries a copy for the
+    logon task. Pages rebuilds in well under a minute and a page that is
+    already open picks the address up on its next look. An empty url takes the
+    page back to "desk is off".
     """
     gh = shutil.which("gh")
     if not gh:
         return False, "gh is not installed, so the page cannot learn the address by itself"
     repo, branch = cfg["PAGES_REPO"], cfg["PAGES_BRANCH"]
     base = f"repos/{repo}/contents/desk.json"
+    env = gh_env(cfg)
     sha = None
     p = run([gh, "api", f"{base}?ref={branch}"], capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=60)
+            encoding="utf-8", errors="replace", timeout=60, env=env)
     if p.returncode == 0:
         try:
             cur = json.loads(p.stdout)
@@ -741,7 +798,8 @@ def publish(cfg: dict, url: str, run=subprocess.run) -> tuple[bool, str]:
     if sha:
         payload["sha"] = sha
     p = run([gh, "api", "-X", "PUT", base, "--input", "-"], input=json.dumps(payload),
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+            env=env)
     if p.returncode != 0:
         return False, "GitHub refused the write: " + (p.stderr or p.stdout or "").strip()[:200]
     return True, "published"
@@ -777,11 +835,27 @@ def reap_stale_tunnels(port: int) -> int:
 
 
 def cmd_down(cfg: dict) -> int:
-    """After a desk died without cleaning up: kill its tunnel, clear the published address."""
+    """Stop a running desk cleanly; after one that died, kill its tunnel and clear the address."""
     port = int(cfg["DESK_PORT"])
     if not port_free(port):
-        log(f"a desk is still listening on port {port} - stop it with Ctrl-C in its own window first")
-        return 1
+        log(f"a desk is listening on port {port} - asking it to stop")
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/shutdown", data=b"{}",
+                                         method="POST", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                json.loads(r.read() or b"{}")
+        except Exception as e:                             # noqa: BLE001 - reported
+            log(f"it did not take the stop request ({type(e).__name__}: {e}) - "
+                f"is something else on port {port}?")
+            return 1
+        for _ in range(45):
+            if port_free(port):
+                break
+            time.sleep(1)
+        else:
+            log("it is still listening after 45 s - end it from Task Manager, then run this again")
+            return 1
+        log("the desk stopped")
     n = reap_stale_tunnels(port)
     log(f"stopped {n} orphaned cloudflared process(es)" if n else "no orphaned cloudflared running")
     ok, why = publish(cfg, "")
@@ -810,7 +884,10 @@ def cmd_check(cfg: dict, ask: bool) -> int:
         problems += 1
     cf = find_cloudflared(cfg, fetch=False)
     print(f"  cloudflared  {cf or 'not here yet - fetched on the first `py desk.py`'}")
-    ok, why = gh_status()
+    if keep_gh_token(cfg):
+        cfg = load_config()
+        print("  gh           token copied into .env for the logon task")
+    ok, why = gh_status(cfg)
     print(f"  gh           {why}" + ("" if ok else " - the link still works; the page will not find the desk by itself"))
     port = int(cfg["DESK_PORT"])
     print(f"  port {port}    {'free' if port_free(port) else 'IN USE - is a desk already running?'}")
@@ -840,6 +917,9 @@ def cmd_test() -> int:
 def cmd_up(cfg: dict, tunnel_wanted: bool, open_browser: bool) -> int:
     code = ensure_code()
     cfg = load_config()
+    if keep_gh_token(cfg):
+        log("copied gh's token into .env so a desk started by the logon task can publish")
+        cfg = load_config()
     port = int(cfg["DESK_PORT"])
     if not port_free(port):
         log(f"port {port} is already in use - is a desk already running? (py desk.py check)")
@@ -850,6 +930,8 @@ def cmd_up(cfg: dict, tunnel_wanted: bool, open_browser: bool) -> int:
             log(f"stopped {n} orphaned cloudflared process(es) left by an earlier desk")
     auth = claude_auth(cfg)
     Desk.state.update({"auth": auth, "tunnel": "", "since": ""})
+    Desk.stop_event.clear()
+    stop = Desk.stop_event
     log(f"job-desk {VERSION}   model {cfg['DESK_MODEL']}   claude "
         + ("signed in" if auth["loggedIn"] else "SIGNED OUT -> py desk.py login"))
     srv = make_server(cfg)
@@ -857,44 +939,43 @@ def cmd_up(cfg: dict, tunnel_wanted: bool, open_browser: bool) -> int:
     log(f"this computer   http://127.0.0.1:{port}/")
 
     if not tunnel_wanted:
-        log("no tunnel - this machine only. Ctrl-C to stop.")
+        log("no tunnel - this machine only. Ctrl-C or `py desk.py down` stops it.")
         try:
-            while True:
-                time.sleep(3600)
+            while not stop.wait(1):
+                pass
         except KeyboardInterrupt:
             print()
         finally:
             srv.shutdown()
+        log("stopped")
         return 0
 
     cf = find_cloudflared(cfg)
     tunnel = Tunnel(cf, port, ROOT / "tunnel.log")
     opened = False
     try:
-        while True:
+        while not stop.is_set():
             try:
                 tunnel.start()
                 url = tunnel.wait_url()
             except RuntimeError as e:
                 log(f"{e}\n  trying again in 15 s")
                 tunnel.stop()
-                time.sleep(15)
+                stop.wait(15)
                 continue
             log(f"tunnel address  {url}   (checking it answers ...)")
             if not tunnel.wait_ready():
                 log("that address never answered - opening a fresh tunnel")
                 tunnel.stop()
-                time.sleep(3)
+                stop.wait(3)
                 continue
             Desk.state.update({"tunnel": url, "since": now_iso()})
             link = (cfg["PAGE_URL"].rstrip("/") + "/#desk="
                     + urllib.parse.quote(url, safe="") + "&code=" + urllib.parse.quote(code, safe=""))
             (ROOT / "open-me.txt").write_text(link + "\n", encoding="utf-8")
-            print()
-            print("  OPEN THIS on any device - the page, pointed at this computer:")
-            print(f"  {link}")
-            print("  (also in open-me.txt; the code is in the link, nothing to type)")
-            print()
+            log("OPEN THIS on any device - the page, pointed at this computer:")
+            log(f"  {link}")
+            log("  (also in open-me.txt; the code is in the link, nothing to type)")
             ok, why = publish(cfg, url)
             log(("published to GitHub - " if ok else "NOT published - ") + why)
             if open_browser and not opened:
@@ -903,12 +984,15 @@ def cmd_up(cfg: dict, tunnel_wanted: bool, open_browser: bool) -> int:
                     webbrowser.open(link)
                 except Exception:                          # noqa: BLE001 - a link was printed
                     pass
-            log("up. Ctrl-C stops the desk and clears the published address.")
-            while tunnel.alive():
-                time.sleep(2)
+            log("up. Ctrl-C or `py desk.py down` stops the desk and clears the published address.")
+            while tunnel.alive() and not stop.wait(1):
+                pass
             Desk.state.update({"tunnel": "", "since": ""})
+            if stop.is_set():
+                break
             log("the tunnel dropped - opening a new one")
-            time.sleep(3)
+            stop.wait(3)
+        log("stopping")
     except KeyboardInterrupt:
         print()
         log("stopping")

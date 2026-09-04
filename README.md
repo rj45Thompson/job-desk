@@ -13,7 +13,17 @@ GitHub Pages (static page)  ──►  a Cloudflare quick tunnel  ──►  des
 
 ## Run it
 
-Double-click `Desk.cmd`, or:
+On RJ's machine it runs itself: a Windows scheduled task named **JobDesk**
+starts `desk.py up` at every sign-in, windowless, and restarts it if it dies.
+The current link is always in `open-me.txt` and at the top of `desk.log`.
+
+```
+py desk.py down           stop it cleanly (the task starts it again at next sign-in)
+Start-ScheduledTask JobDesk                start it again now
+Unregister-ScheduledTask JobDesk -Confirm:$false   remove the task
+```
+
+By hand, double-click `Desk.cmd`, or:
 
 ```
 py desk.py
@@ -42,8 +52,8 @@ is used.
 py desk.py check          what works and what does not, nothing started
 py desk.py check --ask    ...and one real question through the whole chain
 py desk.py serve          this machine only, no tunnel
-py desk.py down           after a desk was killed rather than stopped: ends its
-                          orphaned tunnel and clears the published address
+py desk.py down           stop a running desk cleanly; after one that was killed,
+                          end its orphaned tunnel and clear the published address
 py desk.py test           the test suite (no network, no real Claude)
 ```
 
@@ -87,7 +97,13 @@ DESK_PORT=8790
 DESK_MODEL=opus           any model alias the CLI accepts
 PAGE_URL=https://rj45thompson.github.io/job-desk/
 PAGES_REPO=rj45Thompson/job-desk
+GITHUB_TOKEN=...          copied from gh by the first console run, for the logon task
 ```
+
+The token line exists because a desk started by the scheduled task cannot read
+gh's keyring, even as the same user: `gh auth status` there says it is not
+logged in at all. `py desk.py check` or any console `py desk.py` copies the
+token gh already has into `.env` once; after that both contexts publish.
 
 `desk.json` on GitHub is written by the desk, so `git pull` before you push
 changes of your own.
