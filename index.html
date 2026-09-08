@@ -134,6 +134,11 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
   .shell{grid-template-columns:1fr}
   .side{border-right:0;border-bottom:1px solid var(--line)}
   .chat-only{display:inline-block}
+  .drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+    padding:26px 16px;border:2px dashed var(--line,#c8d2dd);border-radius:10px;cursor:pointer;
+    text-align:center;background:rgba(127,160,200,.05);transition:border-color .15s,background .15s}
+  .drop:hover,.drop.over{border-color:var(--accent,#1f5f9e);background:rgba(31,95,158,.09)}
+  .drop strong{font-size:15px}
   body[data-tab="chat"] .side{display:none}
   body:not([data-tab="chat"]) .chatpane{display:none}
   .grid2{grid-template-columns:1fr}
@@ -167,7 +172,6 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
 
 <nav class="tabs" id="tabs">
   <button class="tab chat-only active" data-tab="chat">Chat</button>
-  <button class="tab" data-tab="profile">Profile</button>
   <button class="tab" data-tab="resume">Résumé</button>
   <button class="tab" data-tab="apps">Applications <span class="count" id="appCount">0</span></button>
 </nav>
@@ -175,28 +179,18 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
 <main class="shell">
   <section class="side" id="side">
 
-    <div class="panel" data-panel="profile">
-      <h2>Profile</h2>
-      <p class="lede">Sent with every question so drafts use real facts. Stays in this browser.</p>
-      <div class="grid2">
-        <label>Name<input data-p="name" autocomplete="name"></label>
-        <label>Email<input data-p="email" type="email" autocomplete="email"></label>
-        <label>Phone<input data-p="phone" autocomplete="tel"></label>
-        <label>City<input data-p="city" placeholder="City, Province"></label>
-        <label class="wide">Current or most recent title<input data-p="title"></label>
-        <label class="wide">Links, one per line<textarea data-p="links" rows="2" placeholder="LinkedIn, GitHub, portfolio…"></textarea></label>
-        <label class="wide">Summary, who you are in three lines<textarea data-p="summary" rows="3"></textarea></label>
-        <label class="wide">Notes for the assistant, standing rules it follows every time<textarea data-p="notes" rows="3" placeholder="e.g. Never say I am looking to relocate; I am available on site. Lead with tooling and performance work. Keep letters under 250 words."></textarea></label>
-      </div>
-      <p class="hint" id="profileSaved">&nbsp;</p>
-    </div>
-
     <div class="panel" data-panel="resume" hidden>
       <h2>Résumé</h2>
-      <p class="lede">Paste the plain text of your résumé. It goes with every question, so nothing gets invented.</p>
-      <textarea id="resumeText" placeholder="Paste your résumé here…"></textarea>
+      <p class="lede">Drop your résumé in. Everything the desk knows about you comes from it - there
+        is nothing else to fill in. It stays in this browser and goes with every question.</p>
+      <label class="drop" id="resumeDrop">
+        <input type="file" id="resumeFile" accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,text/plain,text/markdown" hidden>
+        <strong>Drop a PDF, Word file, or text here</strong>
+        <span class="tiny">or click to choose · .pdf .docx .txt .md</span>
+      </label>
+      <p class="hint" id="resumeStatus">&nbsp;</p>
+      <textarea id="resumeText" placeholder="…or paste it here"></textarea>
       <div class="row">
-        <label class="tiny asbtn">Load a .txt or .md file<input type="file" id="resumeFile" accept=".txt,.md,.markdown,text/plain,text/markdown" hidden></label>
         <span class="hint" id="resumeCount"></span>
         <button class="tiny" id="resumeClear">Clear</button>
       </div>
@@ -429,19 +423,16 @@ function go(tab) {
   if (tab !== "chat") lastSide = tab;
   LS.set("tab", tab);
 }
-let lastSide = LS.get("side", "profile");
+let lastSide = LS.get("side", "resume");
 $$(".tab").forEach(b => b.addEventListener("click", () => { go(b.dataset.tab); if (b.dataset.tab !== "chat") LS.set("side", b.dataset.tab); }));
 
-/* ---------- profile ---------- */
-$$("[data-p]").forEach(el => {
-  el.value = profile[el.dataset.p] || "";
-  el.addEventListener("input", () => {
-    profile[el.dataset.p] = el.value;
-    LS.set("profile", profile);
-    $("#profileSaved").textContent = "Saved.";
-    clearTimeout(el._t); el._t = setTimeout(() => $("#profileSaved").innerHTML = "&nbsp;", 1200);
-  });
-});
+/* The profile FORM is gone - RJ: "there is no form to fill out here, just displays information
+   back to you and you chat, that's it." His own browser storage made the case before he did: it
+   held jd.chat, jd.code, jd.desk and jd.tab, and no jd.profile at all. Eight fields, none ever
+   filled, which is why the desk kept replying "your profile and resume are both empty". Every one
+   of those facts is in the résumé anyway.
+   `profile` survives as a variable because an older export may carry one and there is no reason to
+   throw a user's saved data away on import; nothing writes to it any more. */
 
 /* ---------- résumé ---------- */
 const resumeBox = $("#resumeText");
@@ -449,12 +440,93 @@ resumeBox.value = resume;
 function resumeCount() { $("#resumeCount").textContent = resume ? resume.length.toLocaleString() + " characters" : "nothing saved yet"; }
 resumeCount();
 resumeBox.addEventListener("input", () => { resume = resumeBox.value; LS.set("resume", resume); resumeCount(); });
-$("#resumeFile").addEventListener("change", async (e) => {
-  const f = e.target.files && e.target.files[0]; if (!f) return;
-  resume = (await f.text()).replace(/\r\n/g, "\n"); resumeBox.value = resume; LS.set("resume", resume); resumeCount();
-  toast("Loaded " + f.name); e.target.value = "";
+/* ---- reading a real résumé.
+   .txt and .md were the only formats accepted before, which are the ones almost nobody has: a
+   résumé is a PDF. pdf.js and mammoth are pinned on cdnjs and loaded LAZILY - only when a file of
+   that type actually arrives - so the page still opens instantly, and still works with no network
+   at all for someone pasting text. */
+const CDN = {
+  pdf: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js",
+  pdfWorker: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js",
+  docx: "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js",
+};
+const loaded = {};
+function loadScript(url) {
+  if (loaded[url]) return loaded[url];
+  loaded[url] = new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = url; s.onload = ok;
+    s.onerror = () => no(new Error("could not load " + url));
+    document.head.appendChild(s);
+  });
+  return loaded[url];
+}
+function status(msg) { $("#resumeStatus").textContent = msg || "\u00a0"; }
+
+async function textFromPdf(file) {
+  await loadScript(CDN.pdf);
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = CDN.pdfWorker;
+  const doc = await window.pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pages = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    status(`reading page ${i} of ${doc.numPages}\u2026`);
+    const items = (await (await doc.getPage(i)).getTextContent()).items;
+    /* pdf.js gives positioned runs, not lines. Joining them naively runs the whole page into one
+       paragraph and a résumé becomes unreadable, so break on the y coordinate: a new line whenever
+       the baseline moves by more than a couple of points. */
+    let out = "", lastY = null;
+    for (const it of items) {
+      const y = it.transform[5];
+      if (lastY !== null && Math.abs(y - lastY) > 2) out += "\n";
+      else if (out && !out.endsWith(" ") && !out.endsWith("\n")) out += " ";
+      out += it.str;
+      lastY = y;
+    }
+    pages.push(out.trim());
+  }
+  return pages.join("\n\n");
+}
+
+async function textFromDocx(file) {
+  await loadScript(CDN.docx);
+  const r = await window.mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+  return r.value;
+}
+
+async function takeResumeFile(f) {
+  if (!f) return;
+  const name = (f.name || "").toLowerCase();
+  try {
+    status("reading " + f.name + "\u2026");
+    let text;
+    if (name.endsWith(".pdf")) text = await textFromPdf(f);
+    else if (name.endsWith(".docx")) text = await textFromDocx(f);
+    else if (name.endsWith(".doc")) throw new Error("old .doc files cannot be read in a browser - save it as .docx or PDF");
+    else text = await f.text();
+    text = text.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (!text) throw new Error("nothing readable came out - if it is a scanned PDF the text is a picture, so it needs an export with real text");
+    resume = text; resumeBox.value = resume; LS.set("resume", resume); resumeCount();
+    status("Read " + f.name + " \u2014 " + text.length.toLocaleString() + " characters. It goes with every question from here on.");
+    toast("Loaded " + f.name);
+  } catch (err) {
+    status("Could not read " + f.name + ": " + (err && err.message ? err.message : err));
+  }
+}
+
+$("#resumeFile").addEventListener("change", (e) => {
+  takeResumeFile(e.target.files && e.target.files[0]);
+  e.target.value = "";
 });
-$("#resumeClear").addEventListener("click", () => { if (!resume || confirm("Clear the saved résumé text?")) { resume = ""; resumeBox.value = ""; LS.set("resume", ""); resumeCount(); } });
+const dropZone = $("#resumeDrop");
+["dragenter", "dragover"].forEach(t => dropZone.addEventListener(t, (e) => {
+  e.preventDefault(); dropZone.classList.add("over");
+}));
+["dragleave", "drop"].forEach(t => dropZone.addEventListener(t, () => dropZone.classList.remove("over")));
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  takeResumeFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+});
+$("#resumeClear").addEventListener("click", () => { if (!resume || confirm("Clear the saved résumé text?")) { resume = ""; resumeBox.value = ""; LS.set("resume", ""); resumeCount(); status(""); } });
 
 /* ---------- applications ---------- */
 function currentApp() { return apps.find(a => a.id === selectedApp) || null; }
@@ -599,7 +671,7 @@ function renderChat() {
   if (!chat.length) {
     const w = document.createElement("div");
     w.className = "welcome";
-    w.innerHTML = "<b>This is your desk.</b> Fill in the profile and paste your résumé once; pick an application and paste its posting. Then ask for the letter, the tailored summary, the interview prep, the follow-up. Drafts come back in your voice, from your facts, with gaps marked <code>[like this]</code> instead of invented.";
+    w.innerHTML = "<b>This is your desk.</b> Drop your résumé in on the Résumé tab - that is the only setup there is. Then ask: tailor me for this posting, write the letter, prep me for the interview, critique the résumé. Answers come from your own file, with gaps marked <code>[like this]</code> rather than invented.";
     m.appendChild(w);
   }
   for (const t of chat) bubble(t.role, t.content);
