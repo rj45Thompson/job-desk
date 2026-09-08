@@ -418,7 +418,13 @@ def ask_claude(system: str, user: str, cfg: dict) -> str:
     """
     argv = resolve_cli(cfg)
     neutral = uploads_dir()
-    fd, sys_file = tempfile.mkstemp(suffix=".txt", dir=str(neutral), text=True)
+    # The system prompt does NOT go in the uploads folder. When it did, the tempfile sat next to
+    # the user's resume - listed back to them in the page as "tmpi4d1jh5c.txt 3 KB", and readable
+    # by the very model it configures. Its own private directory; only cwd and --add-dir point at
+    # uploads.
+    priv = Path(tempfile.gettempdir()) / "job-desk-prompts"
+    priv.mkdir(parents=True, exist_ok=True)
+    fd, sys_file = tempfile.mkstemp(suffix=".txt", dir=str(priv), text=True)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(system)
     args = argv + ["-p", "--system-prompt-file", sys_file,
