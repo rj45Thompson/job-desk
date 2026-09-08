@@ -10,6 +10,8 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
+import types
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -457,6 +459,49 @@ class Server(unittest.TestCase):
             page = r.read().decode("utf-8")
         self.assertIn("<!doctype html>", page.lower())
         self.assertIn("Job Desk", page)
+
+
+class TunnelRoutes(unittest.TestCase):
+    """Tunnel.routes() answers "does the PUBLIC hostname still reach us", which is a different
+    question from Tunnel.alive() - and the difference is the whole bug it was written for.
+    cloudflared loses its QUIC connection and keeps running, so the supervision loop's
+    `while tunnel.alive()` stayed true while the published address routed nowhere, and every
+    bookmark pointed at a dead tunnel until someone restarted the desk by hand."""
+
+    def _tunnel(self, url):
+        t = desk.Tunnel.__new__(desk.Tunnel)     # no process, no log file: routes() needs neither
+        t.url = url
+        return t
+
+    def test_no_url_is_not_routing(self):
+        self.assertFalse(self._tunnel("").routes(timeout=1))
+
+    def test_a_200_through_the_public_name_is_routing(self):
+        t = self._tunnel("https://example.invalid")
+        with mock.patch.object(desk.urllib.request, "urlopen") as u:
+            u.return_value.__enter__.return_value.status = 200
+            self.assertTrue(t.routes(timeout=1))
+        self.assertIn("/health", u.call_args[0][0].full_url)
+
+    def test_a_non_200_is_not_routing(self):
+        t = self._tunnel("https://example.invalid")
+        with mock.patch.object(desk.urllib.request, "urlopen") as u:
+            u.return_value.__enter__.return_value.status = 502
+            self.assertFalse(t.routes(timeout=1))
+
+    def test_a_dead_tunnel_is_not_routing_even_though_the_process_lives(self):
+        """The exact failure: the process is fine and the hostname times out."""
+        t = self._tunnel("https://example.invalid")
+        t.proc = types.SimpleNamespace(poll=lambda: None)      # alive() would say yes
+        self.assertTrue(t.alive())
+        with mock.patch.object(desk.urllib.request, "urlopen", side_effect=TimeoutError("no recent network activity")):
+            self.assertFalse(t.routes(timeout=1))
+
+    def test_two_misses_before_replacing(self):
+        """One timeout on a home connection is noise; rotating the address breaks every link
+        already handed out. The threshold is a decision, so it is asserted rather than assumed."""
+        self.assertGreaterEqual(desk.TUNNEL_MISSES_MAX, 2)
+        self.assertGreaterEqual(desk.TUNNEL_CHECK_SEC, 15)
 
 
 if __name__ == "__main__":

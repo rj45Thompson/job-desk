@@ -638,6 +638,13 @@ def download_cloudflared(dest: Path) -> str:
     return str(dest)
 
 
+# How often to ask whether the public hostname still reaches us, and how many misses in a row
+# count as dead. Two, not one: a single timeout on a home connection is noise, and rotating the
+# address is not free - every link already handed out stops working.
+TUNNEL_CHECK_SEC = 60.0
+TUNNEL_MISSES_MAX = 2
+
+
 class Tunnel:
     def __init__(self, cf: str, port: int, logfile: Path):
         self.cf, self.port, self.logfile = cf, port, logfile
@@ -692,6 +699,23 @@ class Tunnel:
                 pass
             time.sleep(1.5)
         return False
+
+    def routes(self, timeout: float = 8.0) -> bool:
+        """Does the PUBLIC hostname still reach this desk?
+
+        `alive()` answers "is cloudflared still a process", which is a different question and the
+        one that let a dead tunnel stay published for hours: cloudflared loses its QUIC connection
+        ("timeout: no recent network activity" in tunnel.log) and keeps running. Nothing downstream
+        notices, because from the desk's side nothing is wrong.
+        """
+        if not self.url:
+            return False
+        try:
+            req = urllib.request.Request(self.url + "/health", headers={"User-Agent": "job-desk"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.status == 200
+        except Exception:                                  # noqa: BLE001 - any failure is "no"
+            return False
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -985,12 +1009,30 @@ def cmd_up(cfg: dict, tunnel_wanted: bool, open_browser: bool) -> int:
                 except Exception:                          # noqa: BLE001 - a link was printed
                     pass
             log("up. Ctrl-C or `py desk.py down` stops the desk and clears the published address.")
-            while tunnel.alive() and not stop.wait(1):
-                pass
+            # Watch the TUNNEL, not the process. cloudflared drops its connection and stays
+            # running ("timeout: no recent network activity" in tunnel.log), so alive() stayed
+            # true while the published address routed nowhere - which is the whole of RJ's
+            # "it never has worked": the desk answers fine when asked directly, and his bookmark
+            # points at a hostname that stopped carrying traffic hours ago.
+            misses = 0
+            while not stop.wait(TUNNEL_CHECK_SEC):
+                if not tunnel.alive():
+                    log("the tunnel process exited")
+                    break
+                if tunnel.routes():
+                    if misses:
+                        log(f"tunnel answering again after {misses} missed check(s)")
+                    misses = 0
+                    continue
+                misses += 1
+                log(f"tunnel did not answer through {tunnel.url} ({misses}/{TUNNEL_MISSES_MAX})")
+                if misses >= TUNNEL_MISSES_MAX:
+                    log("the tunnel is up but no longer routing - replacing it")
+                    break
             Desk.state.update({"tunnel": "", "since": ""})
             if stop.is_set():
                 break
-            log("the tunnel dropped - opening a new one")
+            log("opening a new tunnel (the address will change; the page finds it from desk.json)")
             stop.wait(3)
         log("stopping")
     except KeyboardInterrupt:
