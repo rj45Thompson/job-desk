@@ -5,3 +5,4 @@ cloudflared.exe.part
 open-me.txt
 __pycache__/
 .pytest_cache/
+uploads/

@@ -139,6 +139,9 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
     text-align:center;background:rgba(127,160,200,.05);transition:border-color .15s,background .15s}
   .drop:hover,.drop.over{border-color:var(--accent,#1f5f9e);background:rgba(31,95,158,.09)}
   .drop strong{font-size:15px}
+  .who{margin-right:auto;display:flex;align-items:center;gap:8px;font-size:13px}
+  .who input{width:190px;padding:5px 8px;border:1px solid var(--line,#cfd8e3);border-radius:7px;font:inherit}
+  .who b{font-weight:600}
   .filelist{margin:10px 0 4px}
   .filerow{padding:7px 10px;border:1px solid var(--line,#dde3ea);border-radius:8px;margin-bottom:6px}
   body[data-tab="chat"] .side{display:none}
@@ -173,6 +176,7 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
 </div>
 
 <nav class="tabs" id="tabs">
+  <span class="who" id="who"></span>
   <button class="tab chat-only active" data-tab="chat">Chat</button>
   <button class="tab" data-tab="resume">Résumé</button>
   <button class="tab" data-tab="apps">Applications <span class="count" id="appCount">0</span></button>
@@ -438,6 +442,49 @@ $$(".tab").forEach(b => b.addEventListener("click", () => { go(b.dataset.tab); i
    `profile` survives as a variable because an older export may carry one and there is no reason to
    throw a user's saved data away on import; nothing writes to it any more. */
 
+/* ---------- who is signed in ----------
+   RJ: "just make sure it has a login and then a project per login. This is not going to be for
+   sale today, it's a demo."
+
+   So this is a sign-in, not an identity system, and it is worth being plain about which: the name
+   below is a NAME, not a credential. It gives each person their own project folder on the desk -
+   their own files, their own chat - and it does not defend one from another. Anyone holding the
+   access code can sign in as anyone. That is the right trade for a demo on one machine and the
+   wrong one for anything sold; the day it is sold, this is the piece that gets replaced. */
+let user = LS.get("user", "");
+function renderWho() {
+  const w = $("#who");
+  if (!w) return;
+  w.innerHTML = "";
+  if (user) {
+    const b = document.createElement("b"); b.textContent = user;
+    const out = document.createElement("button");
+    out.className = "tiny"; out.textContent = "Sign out";
+    out.addEventListener("click", () => {
+      user = ""; LS.set("user", "");
+      chat = []; LS.set("chat", chat); renderChat();
+      renderWho(); refreshFiles();
+    });
+    w.append(document.createTextNode("Signed in as "), b, out);
+  } else {
+    const i = document.createElement("input");
+    i.placeholder = "your name or email"; i.setAttribute("aria-label", "Sign in");
+    const go = document.createElement("button");
+    go.className = "tiny"; go.textContent = "Sign in";
+    const signIn = () => {
+      const v = i.value.trim();
+      if (!v) { i.focus(); return; }
+      user = v; LS.set("user", user);
+      chat = []; LS.set("chat", chat); renderChat();
+      renderWho(); refreshFiles();
+    };
+    go.addEventListener("click", signIn);
+    i.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); signIn(); } });
+    w.append(i, go);
+  }
+}
+renderWho();
+
 /* ---------- résumé ---------- */
 const resumeBox = $("#resumeText");
 resumeBox.value = resume;
@@ -473,7 +520,7 @@ async function sendFile(f) {
   });
   const r = await fetch(desk.url + "/upload", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: f.name, data, code }),
+    body: JSON.stringify({ name: f.name, data, code, user }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { status("The desk refused it: " + ((j.error && j.error.message) || r.status)); return; }
@@ -495,7 +542,7 @@ async function refreshFiles() {
   const ok = await findDesk();          // boolean; `desk` is the module-level object it sets
   if (!ok || !desk.url) return;
   try {
-    const r = await fetch(desk.url + "/files", { cache: "no-store" });
+    const r = await fetch(desk.url + "/files?user=" + encodeURIComponent(user), { cache: "no-store" });
     if (r.ok) renderFiles((await r.json()).files || []);
   } catch { /* the desk is off; the empty list already says so */ }
 }
@@ -706,7 +753,7 @@ async function send(text) {
     let r = await fetch(desk.url + "/chat", {
       method: "POST", signal: ctl.signal,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ messages: chat.slice(-24), profile, resume, application: currentApp() || undefined, code })
+      body: JSON.stringify({ messages: chat.slice(-24), profile, resume, application: currentApp() || undefined, code, user })
     });
     let j = await r.json().catch(() => null);
     /* The desk hands back an id, not an answer. Cloudflare cuts a tunnelled request at about 100

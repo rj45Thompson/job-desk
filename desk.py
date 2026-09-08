@@ -223,7 +223,8 @@ def read_request(body) -> dict:
     src = body.get("application") if isinstance(body.get("application"), dict) else {}
     application = {k: clean(src[k], n) for k, n in APP_KEYS.items()
                    if isinstance(src.get(k), str) and src[k].strip()}
-    return {"messages": turns, "profile": profile, "resume": resume,
+    return {"user": user_slug(body.get("user")),
+            "messages": turns, "profile": profile, "resume": resume,
             "application": application}
 
 
@@ -239,7 +240,7 @@ def build_user_turn(req: dict) -> str:
                      + "\n</profile>")
     else:
         parts.append("<profile>\n(nothing filled in yet)\n</profile>")
-    files = list_uploads()
+    files = list_uploads(req.get("user"))
     if files:
         parts.append("<files>\nIn your working directory - open them with the Read tool:\n"
                      + "\n".join(f"- {f['name']}  ({f['bytes']:,} bytes)" for f in files)
@@ -374,24 +375,47 @@ def safe_name(raw) -> str:
     return stem + ext
 
 
-def list_uploads() -> list:
+def list_uploads(user=None) -> list:
     try:
         return sorted(
-            ({"name": p.name, "bytes": p.stat().st_size} for p in uploads_dir().iterdir()
+            ({"name": p.name, "bytes": p.stat().st_size} for p in uploads_dir(user).iterdir()
              if p.is_file()),
             key=lambda f: f["name"].lower())
     except OSError:
         return []
 
 
-def uploads_dir() -> Path:
-    """Where an uploaded file lands, and the ONLY folder Claude is pointed at."""
-    d = ROOT / "uploads"
+DEFAULT_USER = "guest"
+
+
+def user_slug(raw) -> str:
+    """One signed-in person, as a folder name.
+
+    A NAME, not a credential - see this module's note. It only has to be a stable, safe folder
+    name, so an email keeps its local part and everything path-shaped is scrubbed: a project called
+    "../../Windows" would otherwise be a write outside uploads.
+    """
+    if not isinstance(raw, str):
+        return DEFAULT_USER
+    name = raw.strip().lower()
+    if "@" in name:
+        name = name.split("@", 1)[0]
+    name = re.sub(r"[^a-z0-9._-]+", "-", name)
+    # No run of dots survives. "a/../../b" was becoming the folder "a-..-..-b" - which does not
+    # actually escape, since it is one path segment - but a directory name containing ".." is a
+    # thing someone later has to reason about, and the whole point of a slug is that nobody has to.
+    name = re.sub(r"\.{2,}", ".", name).strip("-._")
+    return name[:48] or DEFAULT_USER
+
+
+def uploads_dir(user=None) -> Path:
+    """That person's project folder - the ONLY folder Claude is pointed at for their questions."""
+    d = ROOT / "uploads" / user_slug(user)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def ask_claude(system: str, user: str, cfg: dict) -> str:
+def ask_claude(system: str, user: str, cfg: dict, who=None) -> str:
     """
     One question to the signed-in Claude Code CLI, and its answer back.
 
@@ -417,7 +441,8 @@ def ask_claude(system: str, user: str, cfg: dict) -> str:
     application even if asked to.
     """
     argv = resolve_cli(cfg)
-    neutral = uploads_dir()
+    # the signed-in person's project, and nothing else: one person's files are not another's context
+    neutral = uploads_dir(who)
     # The system prompt does NOT go in the uploads folder. When it did, the tempfile sat next to
     # the user's resume - listed back to them in the page as "tmpi4d1jh5c.txt 3 KB", and readable
     # by the very model it configures. Its own private directory; only cwd and --add-dir point at
@@ -629,8 +654,10 @@ class Desk(http.server.BaseHTTPRequestHandler):
             return self._send({"state": "done", "text": j.get("text", ""),
                                "model": self.cfg.get("DESK_MODEL")})
         if path == "/files":
-            # what the desk is holding, so the page can show it back
-            return self._send({"files": list_uploads()})
+            # what the desk is holding FOR THIS PERSON, so the page can show it back
+            who = user_slug(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                            .get("user", [""])[0])
+            return self._send({"user": who, "files": list_uploads(who)})
         if path == "/desk.json":
             return self._send({"url": self.state.get("tunnel", ""),
                                "since": self.state.get("since", "")})
@@ -679,6 +706,7 @@ class Desk(http.server.BaseHTTPRequestHandler):
         # match my resume" - so an answer that searches the web can never come back on the
         # request that asked for it. The page polls GET /chat/<id> instead.
         jid = secrets.token_urlsafe(9)
+        who = req["user"]
         turn = build_user_turn(req)
         asked = len(req["messages"][-1]["content"])
         job_put(jid, state="running", at=time.time())
@@ -687,7 +715,7 @@ class Desk(http.server.BaseHTTPRequestHandler):
         def work():
             t0 = time.time()
             try:
-                text = self.answer(SYSTEM, turn, self.cfg)
+                text = self.answer(SYSTEM, turn, self.cfg, who)
                 log(f"chat  {kind}  {asked} chars in, {len(text)} out, "
                     f"{int((time.time() - t0) * 1000)} ms")
                 job_put(jid, state="done", text=text, at=time.time())
@@ -726,6 +754,7 @@ class Desk(http.server.BaseHTTPRequestHandler):
             return self._fail("That was not JSON.", "bad_request", 400)
         if not self._gate(body):
             return
+        who = user_slug(body.get("user"))
         name = safe_name(body.get("name"))
         if not name:
             return self._fail("That file needs a name ending in a kind the desk accepts: "
@@ -736,10 +765,11 @@ class Desk(http.server.BaseHTTPRequestHandler):
             return self._fail("That file did not decode.", "bad_request", 400)
         if not blob:
             return self._fail("That file was empty.", "bad_request", 400)
-        out = uploads_dir() / name
+        out = uploads_dir(who) / name
         out.write_bytes(blob)
-        log(f"upload  {name}  {len(blob)} bytes")
-        self._send({"ok": True, "name": name, "bytes": len(blob), "files": list_uploads()})
+        log(f"upload  {who}/{name}  {len(blob)} bytes")
+        self._send({"ok": True, "name": name, "bytes": len(blob), "user": who,
+                    "files": list_uploads(who)})
 
     def _gate(self, body) -> bool:
         """True to answer. Otherwise the refusal has already been sent."""

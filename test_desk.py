@@ -538,6 +538,36 @@ class SafeName(unittest.TestCase):
         self.assertEqual(desk.safe_name("Resume.PDF"), "Resume.pdf")
 
 
+class PerLoginProjects(unittest.TestCase):
+    """A project per login. The slug is the folder name, so anything path-shaped in it would be a
+    write outside uploads/ - and the name arrives over the tunnel."""
+
+    def test_an_email_becomes_its_local_part(self):
+        self.assertEqual(desk.user_slug("RJ45Thompson@gmail.com"), "rj45thompson")
+
+    def test_two_logins_get_two_folders(self):
+        a, b = desk.uploads_dir("ada@x.com"), desk.uploads_dir("bob")
+        self.assertNotEqual(a, b)
+        self.assertEqual(a.parent, b.parent)
+        self.assertEqual(a.parent.name, "uploads")
+
+    def test_nothing_escapes_the_uploads_folder(self):
+        for evil in ("../../Windows", r"..\..\etc", "/etc/passwd", "a/../../b", "..", "."):
+            d = desk.uploads_dir(evil)
+            self.assertEqual(d.parent.name, "uploads", f"{evil!r} escaped to {d}")
+            self.assertNotIn("..", d.name)
+
+    def test_no_name_is_the_guest_project(self):
+        for empty in ("", "   ", None, 7, "!!!"):
+            self.assertEqual(desk.user_slug(empty), desk.DEFAULT_USER)
+
+    def test_one_persons_files_are_not_anothers(self):
+        (desk.uploads_dir("ada") / "ada.txt").write_text("a", encoding="utf-8")
+        names = [f["name"] for f in desk.list_uploads("bob")]
+        self.assertNotIn("ada.txt", names)
+        self.assertIn("ada.txt", [f["name"] for f in desk.list_uploads("ada")])
+
+
 class TunnelRoutes(unittest.TestCase):
     """Tunnel.routes() answers "does the PUBLIC hostname still reach us", which is a different
     question from Tunnel.alive() - and the difference is the whole bug it was written for.
