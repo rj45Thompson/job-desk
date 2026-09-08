@@ -67,7 +67,12 @@ DEFAULTS = {
     "PAGES_BRANCH": "main",
     "CLAUDE_CLI": "",
     "CLOUDFLARED": "",
-    "CLAUDE_TIMEOUT": "240",
+    # 15 minutes. This was 240 s, which was generous while an answer had to come back on the
+    # request that asked for it - Cloudflare cut those at ~100 s anyway. Now the page polls, so
+    # nothing is holding a connection and the only question is how long the work honestly takes:
+    # a résumé question is ~20 s, and a real job search (several searches, several page fetches)
+    # ran past 240 s and was killed mid-answer. Measured, not guessed.
+    "CLAUDE_TIMEOUT": "900",
     "GITHUB_TOKEN": "",
 }
 

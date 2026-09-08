@@ -508,7 +508,14 @@ dropZone.addEventListener("drop", (e) => {
   e.preventDefault();
   sendFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
 });
-refreshFiles();
+/* Ask AFTER the desk has been found, and again whenever the Résumé tab is opened. The first
+   version called this at load: findDesk() had not resolved, the fetch went nowhere, and the panel
+   sat on "Nothing on the desk yet" while the file was sitting on the desk the whole time - GET
+   /files returned it correctly the entire time it was showing empty. */
+findDesk().then(refreshFiles).catch(() => {});
+$$(".tab").forEach(b => b.addEventListener("click", () => {
+  if (b.dataset.tab === "resume") refreshFiles();
+}));
 
 $("#resumeClear").addEventListener("click", () => { if (!resume || confirm("Clear the saved résumé text?")) { resume = ""; resumeBox.value = ""; LS.set("resume", ""); resumeCount(); status(""); } });
 
