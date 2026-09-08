@@ -691,12 +691,31 @@ async function send(text) {
   renderStatus("busy", "Asking your desk…");
   ctl = new AbortController();
   try {
-    const r = await fetch(desk.url + "/chat", {
+    let r = await fetch(desk.url + "/chat", {
       method: "POST", signal: ctl.signal,
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ messages: chat.slice(-24), profile, resume, application: currentApp() || undefined, code })
     });
-    const j = await r.json().catch(() => null);
+    let j = await r.json().catch(() => null);
+    /* The desk hands back an id, not an answer. Cloudflare cuts a tunnelled request at about 100
+       seconds - measured, error 524 at 125.4 s on "find me 2 jobs that match my resume" - so an
+       answer that searches the web can never arrive on the request that asked for it. Poll
+       instead: every request is short, and locking your phone no longer loses an answer that was
+       already being written. */
+    if (r.ok && j && j.id && !j.text) {
+      const id = j.id, started = Date.now();
+      while (Date.now() - started < 15 * 60 * 1000) {
+        if (ctl && ctl.signal.aborted) throw Object.assign(new Error("stopped"), { name: "AbortError" });
+        await new Promise(w => setTimeout(w, 1800));
+        let p;
+        try { p = await fetch(desk.url + "/chat/" + encodeURIComponent(id), { cache: "no-store" }); }
+        catch { continue; }                      // a blip on the tunnel: keep waiting, do not lose it
+        const pj = await p.json().catch(() => null);
+        if (p.ok && pj && pj.state === "running") continue;
+        j = pj; r = p;                            // done, or an error to fall into the branch below
+        break;
+      }
+    }
     think.remove();
     if (!r.ok || !j || typeof j.text !== "string") {
       const ecode = j && j.error && j.error.code || "";

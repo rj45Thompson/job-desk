@@ -321,6 +321,30 @@ def parse_result(out: str) -> tuple[str, bool]:
 ALLOWED_TOOLS = ["Read", "Glob", "Grep", "WebSearch", "WebFetch"]
 
 
+# An answer is collected by polling, so nothing is lost if a connection drops - but an answer
+# nobody has collected in ten minutes is an answer nobody is waiting for.
+JOB_TTL = 600.0
+JOBS: dict = {}
+JOBS_LOCK = threading.Lock()
+
+
+def job_put(jid: str, **fields) -> None:
+    with JOBS_LOCK:
+        JOBS.setdefault(jid, {}).update(fields)
+
+
+def job_get(jid: str):
+    with JOBS_LOCK:
+        return dict(JOBS.get(jid) or {})
+
+
+def jobs_sweep() -> None:
+    cut = time.time() - JOB_TTL
+    with JOBS_LOCK:
+        for jid in [k for k, v in JOBS.items() if v.get("at", 0) < cut]:
+            del JOBS[jid]
+
+
 MAX_UPLOAD = 12 * 1024 * 1024          # base64 of a résumé or a posting, not a video
 # What a job desk is ever handed. Deliberately short: every kind here is one Claude can READ, and
 # an extension nobody needs is an extension nobody has to think about.
@@ -580,6 +604,19 @@ class Desk(http.server.BaseHTTPRequestHandler):
                                "tunnel": self.state.get("tunnel", ""),
                                "signedIn": auth.get("loggedIn"),
                                "local": self._is_local()})
+        if path.startswith("/chat/"):
+            jid = path[len("/chat/"):]
+            j = job_get(jid)
+            if not j:
+                # expired, or never existed. Either way the page should ask again rather than wait.
+                return self._fail("That answer is no longer here - ask again.", "not_found", 404)
+            if j.get("state") == "running":
+                return self._send({"state": "running"})
+            if j.get("state") == "error":
+                return self._fail(j.get("message") or "The desk hit an error.",
+                                  j.get("code") or "crash", int(j.get("status") or 500))
+            return self._send({"state": "done", "text": j.get("text", ""),
+                               "model": self.cfg.get("DESK_MODEL")})
         if path == "/files":
             # what the desk is holding, so the page can show it back
             return self._send({"files": list_uploads()})
@@ -626,22 +663,38 @@ class Desk(http.server.BaseHTTPRequestHandler):
             log(f"chat  {kind}  busy, refused")
             return self._fail("The desk is busy with other answers. Try again in a moment.",
                               "busy", 429)
-        t0 = time.time()
-        try:
-            text = self.answer(SYSTEM, build_user_turn(req), self.cfg)
-            log(f"chat  {kind}  {len(req['messages'][-1]['content'])} chars in, "
-                f"{len(text)} out, {int((time.time() - t0) * 1000)} ms")
-            self._send({"text": text, "model": self.cfg.get("DESK_MODEL")})
-        except DeskError as e:
-            if e.code == "signed_out":
-                self.state["auth"] = {"loggedIn": False, "method": ""}
-            log(f"chat  {kind}  {e.code}: {e.message}")
-            self._fail(e.message, e.code, e.status)
-        except Exception as e:                             # noqa: BLE001 - the last net
-            log(f"chat  {kind}  crashed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
-            self._fail(f"The desk hit an error ({type(e).__name__}). Try again.", "crash", 500)
-        finally:
-            self.slots.release()
+        # The work runs in a thread and the request returns NOW. Cloudflare cuts a tunnelled
+        # request at about 100 seconds - measured, error 524 at 125.4 s on "find me 2 jobs that
+        # match my resume" - so an answer that searches the web can never come back on the
+        # request that asked for it. The page polls GET /chat/<id> instead.
+        jid = secrets.token_urlsafe(9)
+        turn = build_user_turn(req)
+        asked = len(req["messages"][-1]["content"])
+        job_put(jid, state="running", at=time.time())
+        jobs_sweep()
+
+        def work():
+            t0 = time.time()
+            try:
+                text = self.answer(SYSTEM, turn, self.cfg)
+                log(f"chat  {kind}  {asked} chars in, {len(text)} out, "
+                    f"{int((time.time() - t0) * 1000)} ms")
+                job_put(jid, state="done", text=text, at=time.time())
+            except DeskError as e:
+                if e.code == "signed_out":
+                    self.state["auth"] = {"loggedIn": False, "method": ""}
+                log(f"chat  {kind}  {e.code}: {e.message}")
+                job_put(jid, state="error", code=e.code, message=e.message,
+                        status=e.status, at=time.time())
+            except Exception as e:                         # noqa: BLE001 - the last net
+                log(f"chat  {kind}  crashed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+                job_put(jid, state="error", code="crash", status=500, at=time.time(),
+                        message=f"The desk hit an error ({type(e).__name__}). Try again.")
+            finally:
+                self.slots.release()
+
+        threading.Thread(target=work, daemon=True).start()
+        self._send({"id": jid, "state": "running", "model": self.cfg.get("DESK_MODEL")}, 202)
 
     def _upload(self):
         """Take one file into the uploads folder, where Claude can read it.

@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 import types
@@ -361,6 +362,41 @@ class Server(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"null"), dict(e.headers)
 
+    def ask(self, body, headers=None, host=None):
+        """POST /chat, then collect the answer from GET /chat/<id>.
+
+        The desk stopped answering on the request that asked, because Cloudflare cuts a tunnelled
+        request at ~100 s and a web search takes longer than that. Every test that used to read the
+        answer off the POST now goes through this, which means the polling path is covered by every
+        one of them rather than by a single test written for it.
+        """
+        st, j, h = self.call("POST", "/chat", body, headers, host)
+        if st != 202 or not isinstance(j, dict) or not j.get("id"):
+            return st, j, h                       # refused before any work started
+        jid = j["id"]                             # keep it: j is reassigned by each poll
+        for _ in range(200):                      # 20 s: the fake CLI answers at once
+            st, j, h = self.call("GET", "/chat/" + jid)
+            if not (st == 200 and isinstance(j, dict) and j.get("state") == "running"):
+                return st, j, h
+            time.sleep(0.1)
+        raise AssertionError("the desk never finished the answer")
+
+    def test_an_answer_is_collected_not_waited_for(self):
+        st, j, _ = self.call("POST", "/chat", {"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(st, 202, "POST must hand back an id immediately, not hold the request")
+        self.assertTrue(j.get("id"))
+        self.assertEqual(j.get("state"), "running")
+        st, j, _ = self.ask({"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(st, 200)
+        # the fake echoes the tail of the turn, so the question is at the END of the echo
+        self.assertIn("hi]", j["text"])
+        self.assertIn("WebSearch", j["text"])
+
+    def test_collecting_an_answer_that_is_gone(self):
+        st, j, _ = self.call("GET", "/chat/nosuchid")
+        self.assertEqual(st, 404)
+        self.assertEqual(j["error"]["code"], "not_found")
+
     def test_health_is_open_and_says_local(self):
         st, j, _ = self.call("GET", "/health")
         self.assertEqual(st, 200)
@@ -370,7 +406,7 @@ class Server(unittest.TestCase):
         self.assertEqual(j["version"], desk.VERSION)
 
     def test_local_chat_needs_no_code(self):
-        st, j, _ = self.call("POST", "/chat", {"messages": [{"role": "user", "content": "hello desk"}]})
+        st, j, _ = self.ask({"messages": [{"role": "user", "content": "hello desk"}]})
         self.assertEqual(st, 200, j)
         self.assertIn("ECHO[", j["text"])
         self.assertIn("hello desk", j["text"])
@@ -378,13 +414,13 @@ class Server(unittest.TestCase):
     def test_tunnel_needs_the_code(self):
         via = {"CF-Connecting-IP": "203.0.113.9", "CF-Ray": "abc"}
         msg = {"messages": [{"role": "user", "content": "hi"}]}
-        st, j, _ = self.call("POST", "/chat", msg, via)
+        st, j, _ = self.ask(msg, via)
         self.assertEqual(st, 403)
         self.assertEqual(j["error"]["code"], "code_required")
-        st, j, _ = self.call("POST", "/chat", dict(msg, code="wrong"), via)
+        st, j, _ = self.ask(dict(msg, code="wrong"), via)
         self.assertEqual(st, 403)
         self.assertEqual(j["error"]["code"], "code_refused")
-        st, j, _ = self.call("POST", "/chat", dict(msg, code="open-sesame"), via)
+        st, j, _ = self.ask(dict(msg, code="open-sesame"), via)
         self.assertEqual(st, 200, j)
         self.assertIn("ECHO[", j["text"])
         st, j, _ = self.call("GET", "/health", headers=via)
@@ -392,14 +428,14 @@ class Server(unittest.TestCase):
 
     def test_a_foreign_host_header_is_not_local(self):
         msg = {"messages": [{"role": "user", "content": "hi"}]}
-        st, j, _ = self.call("POST", "/chat", msg, host="quiet-badger.trycloudflare.com")
+        st, j, _ = self.ask(msg, host="quiet-badger.trycloudflare.com")
         self.assertEqual(st, 403)
 
     def test_no_code_configured_refuses_everyone_but_this_machine(self):
         old = desk.Desk.cfg
         desk.Desk.cfg = dict(old, DESK_CODE="")
         try:
-            st, j, _ = self.call("POST", "/chat", {"messages": [{"role": "user", "content": "hi"}],
+            st, j, _ = self.ask({"messages": [{"role": "user", "content": "hi"}],
                                                    "code": "anything"}, {"CF-Ray": "x"})
             self.assertEqual(st, 403)
             self.assertIn("no access code", j["error"]["message"])
@@ -412,9 +448,9 @@ class Server(unittest.TestCase):
         try:
             via = {"CF-Connecting-IP": "198.51.100.7"}
             msg = {"messages": [{"role": "user", "content": "hi"}], "code": "open-sesame"}
-            self.assertEqual(self.call("POST", "/chat", msg, via)[0], 200)
-            self.assertEqual(self.call("POST", "/chat", msg, via)[0], 200)
-            st, j, _ = self.call("POST", "/chat", msg, via)
+            self.assertEqual(self.ask(msg, via)[0], 200)
+            self.assertEqual(self.ask(msg, via)[0], 200)
+            st, j, _ = self.ask(msg, via)
             self.assertEqual(st, 429)
             self.assertEqual(j["error"]["code"], "rate_limited")
         finally:
@@ -423,7 +459,7 @@ class Server(unittest.TestCase):
     def test_signed_out_comes_back_as_503_and_health_notices(self):
         os.environ["FAKE_MODE"] = "signed_out"
         try:
-            st, j, _ = self.call("POST", "/chat", {"messages": [{"role": "user", "content": "hi"}]})
+            st, j, _ = self.ask({"messages": [{"role": "user", "content": "hi"}]})
             self.assertEqual(st, 503)
             self.assertEqual(j["error"]["code"], "signed_out")
             self.assertFalse(self.call("GET", "/health")[1]["signedIn"])
@@ -432,7 +468,7 @@ class Server(unittest.TestCase):
             desk.Desk.state["auth"] = {"loggedIn": True, "method": "claude.ai"}
 
     def test_bad_requests_are_sentences(self):
-        st, j, _ = self.call("POST", "/chat", {"messages": [{"role": "assistant", "content": "x"}]})
+        st, j, _ = self.ask({"messages": [{"role": "assistant", "content": "x"}]})
         self.assertEqual(st, 400)
         self.assertIn("yours", j["error"]["message"])
         req = urllib.request.Request(self.base + "/chat", data=b"not json", method="POST")
