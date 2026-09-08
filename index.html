@@ -140,6 +140,17 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
   .drop:hover,.drop.over{border-color:var(--accent,#1f5f9e);background:rgba(31,95,158,.09)}
   .drop strong{font-size:15px}
   .who{margin-right:auto;display:flex;align-items:center;gap:8px;font-size:13px}
+  .gate{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;
+    background:var(--bg,#f6f8fa);padding:24px}
+  .gatecard{max-width:430px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px}
+  .gatecard h1{margin:0;font-size:26px}
+  .gatecard p{margin:0;color:var(--muted,#5a6b7c);line-height:1.55}
+  .gatename{display:flex;gap:8px;align-items:center}
+  .gatename input{padding:8px 10px;border:1px solid var(--line,#cfd8e3);border-radius:8px;font:inherit;width:220px}
+  body:not([data-signed-in]) .top,
+  body:not([data-signed-in]) .tabs,
+  body:not([data-signed-in]) .shell,
+  body:not([data-signed-in]) .codebar{display:none}
   .who input{width:190px;padding:5px 8px;border:1px solid var(--line,#cfd8e3);border-radius:7px;font:inherit}
   .who b{font-weight:600}
   .filelist{margin:10px 0 4px}
@@ -174,6 +185,19 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
   <button id="codeUse" class="btn">Use</button>
   <span id="codeHint" class="hint">The desk printed it, and it is in the link it opened. It is in .env on the desk computer too.</span>
 </div>
+
+<!-- Sign in comes FIRST. RJ: "sign in should be first before you access chat". Disabling the
+     input was not the same thing - the whole desk was still sitting there in front of a stranger,
+     tabs and all, which reads as "look around" rather than "this is someone's". -->
+<section class="gate" id="gate" hidden>
+  <div class="gatecard">
+    <h1>Job Desk</h1>
+    <p>Sign in to start. Your résumé and your applications are kept under your own
+       name - nobody else's are visible, and yours are not visible to anyone else.</p>
+    <div id="gateGoogle"></div>
+    <div class="gatename" id="gateName"></div>
+  </div>
+</section>
 
 <nav class="tabs" id="tabs">
   <span class="who" id="who"></span>
@@ -321,6 +345,10 @@ async function publishedDesk() {
     const r = await fetch("desk.json?" + Date.now(), { cache: "no-store" });
     if (!r.ok) return "";
     const j = await r.json();
+    /* The code comes with the address now, so nobody ever types one. RJ: "I don't want to put a
+       code in ... I want it to just work once signed in" - and he is right that it was redundant
+       the moment sign-in existed. A typed code in front of a sign-in is two gates on one demo. */
+    if (j && j.code && !code) { code = j.code; LS.set("code", code); }
     return tidy(j && j.url);
   } catch { return ""; }
 }
@@ -467,30 +495,9 @@ function renderWho() {
     });
     w.append(document.createTextNode("Signed in as "), b, out);
   } else {
-    // Google's own button, when the desk has a client id. Its script is loaded lazily so the page
-    // still opens instantly, and still works with no network, for the typed-name sign-in below.
-    const gbtn = document.createElement("div");
-    gbtn.id = "gbtn";
-    w.appendChild(gbtn);
-    /* When Google sign-in is configured it is the ONLY sign-in - RJ: "the sign in should be with
-       the actual google sign in, not just some random puppetshow", and he is right that a name you
-       type is theatre wearing a login's clothes. The typed box below is what you get when no
-       client id is set, so the demo still runs unconfigured; googleButton() removes it once
-       Google's button is actually on the page. */
-    const i = document.createElement("input");
-    i.placeholder = "sign in - any name"; i.setAttribute("aria-label", "Sign in");
-    const go = document.createElement("button");
-    go.className = "tiny"; go.textContent = "Sign in";
-    const signIn = () => {
-      const v = i.value.trim();
-      if (!v) { i.focus(); return; }
-      user = v; LS.set("user", user);
-      chat = []; LS.set("chat", chat); renderChat();
-      renderWho(); gateOnSignIn(); refreshFiles(); projectLoad();
-    };
-    go.addEventListener("click", signIn);
-    i.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); signIn(); } });
-    w.append(i, go);
+    // Signed out, the header is not on screen at all - the gate is (see gateOnSignIn).
+    // There is nothing to draw here, and drawing a second sign-in would be a second door.
+    return;
   }
 }
 /* The applications and the chat live on the DESK, under this login - not in this browser.

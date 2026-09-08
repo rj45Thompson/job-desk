@@ -291,7 +291,8 @@ class Publish(unittest.TestCase):
         calls, run = self._run([self.P(1), self.P(0, "{}")])
         desk.publish(self.cfg, "", run=run)
         doc = json.loads(desk.base64.b64decode(json.loads(calls[1][1]["input"])["content"]))
-        self.assertEqual(doc, {"url": "", "since": ""})
+        # the code ships with the address so nobody ever types one; clearing clears both
+        self.assertEqual(doc, {"url": "", "code": "", "since": ""})
 
     def test_refusal_is_reported(self):
         calls, run = self._run([self.P(1), self.P(1)])

@@ -1184,7 +1184,17 @@ def publish(cfg: dict, url: str, run=subprocess.run) -> tuple[bool, str]:
                 return True, "already published"
         except (ValueError, TypeError):
             sha = None
-    doc = json.dumps({"url": url, "since": now_iso() if url else ""}, indent=2) + "\n"
+    # The access code goes out WITH the address. RJ: "I don't want to put a code in ... I want
+    # it to just work once signed in." He is right that it was redundant the moment sign-in
+    # existed - two gates in front of one demo, and the one he had to type taught him nothing.
+    #
+    # Be exact about the trade, because it is real and it is his to make: the code stops being a
+    # secret. Anyone who finds the GitHub Pages URL reaches the desk, signs in with a name, and
+    # asks questions on his Claude. For a demo he is handing out, that is the point. The thing
+    # that closes it again is the Google button - identity checked rather than typed - and then
+    # this line stops shipping the code.
+    doc = json.dumps({"url": url, "code": cfg.get("DESK_CODE") or "",
+                      "since": now_iso() if url else ""}, indent=2) + chr(10)
     payload = {"message": f"desk: {'up at ' + url if url else 'down'}", "branch": branch,
                "content": base64.b64encode(doc.encode("utf-8")).decode("ascii")}
     if sha:
