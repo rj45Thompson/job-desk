@@ -375,11 +375,35 @@ def safe_name(raw) -> str:
     return stem + ext
 
 
+PROJECT_FILE = "project.json"
+MAX_PROJECT = 4 * 1024 * 1024          # applications and a chat thread, not an archive
+
+
+def project_path(user=None) -> Path:
+    return uploads_dir(user) / PROJECT_FILE
+
+
+def project_read(user=None) -> dict:
+    try:
+        return json.loads(project_path(user).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def project_write(user, data: dict) -> None:
+    """Whole-file replace, written beside the résumé.
+
+    It lands in the folder Claude reads, which is the point rather than a side effect: asked "what
+    have I applied for", it can open this and answer instead of being told.
+    """
+    project_path(user).write_text(json.dumps(data, indent=1), encoding="utf-8")
+
+
 def list_uploads(user=None) -> list:
     try:
         return sorted(
             ({"name": p.name, "bytes": p.stat().st_size} for p in uploads_dir(user).iterdir()
-             if p.is_file()),
+             if p.is_file() and p.name != PROJECT_FILE),
             key=lambda f: f["name"].lower())
     except OSError:
         return []
@@ -653,6 +677,10 @@ class Desk(http.server.BaseHTTPRequestHandler):
                                   j.get("code") or "crash", int(j.get("status") or 500))
             return self._send({"state": "done", "text": j.get("text", ""),
                                "model": self.cfg.get("DESK_MODEL")})
+        if path == "/project":
+            who = user_slug(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                            .get("user", [""])[0])
+            return self._send({"user": who, "project": project_read(who)})
         if path == "/files":
             # what the desk is holding FOR THIS PERSON, so the page can show it back
             who = user_slug(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -678,6 +706,8 @@ class Desk(http.server.BaseHTTPRequestHandler):
             return
         if path == "/upload":
             return self._upload()
+        if path == "/project":
+            return self._project()
         if path != "/chat":
             return self._fail("Not found.", "not_found", 404)
         try:
@@ -770,6 +800,28 @@ class Desk(http.server.BaseHTTPRequestHandler):
         log(f"upload  {who}/{name}  {len(blob)} bytes")
         self._send({"ok": True, "name": name, "bytes": len(blob), "user": who,
                     "files": list_uploads(who)})
+
+    def _project(self):
+        """Save one login's applications and chat, so they follow the login rather than the browser."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > MAX_PROJECT:
+            return self._fail("That project is too big." if n > MAX_PROJECT else "Empty project.",
+                              "bad_request", 413 if n > MAX_PROJECT else 400)
+        try:
+            body = json.loads(self.rfile.read(n).decode("utf-8", "replace"))
+        except ValueError:
+            return self._fail("That was not JSON.", "bad_request", 400)
+        if not self._gate(body):
+            return
+        who = user_slug(body.get("user"))
+        data = body.get("project")
+        if not isinstance(data, dict):
+            return self._fail("A project is an object.", "bad_request", 400)
+        project_write(who, data)
+        self._send({"ok": True, "user": who})
 
     def _gate(self, body) -> bool:
         """True to answer. Otherwise the refusal has already been sent."""

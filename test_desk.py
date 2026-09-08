@@ -568,6 +568,32 @@ class PerLoginProjects(unittest.TestCase):
         self.assertIn("ada.txt", [f["name"] for f in desk.list_uploads("ada")])
 
 
+class ProjectStore(unittest.TestCase):
+    """Applications and chat live on the desk under the login, so they follow the person to their
+    phone instead of dying with one browser's site data."""
+
+    def test_an_unknown_project_is_empty_not_an_error(self):
+        self.assertEqual(desk.project_read("nobody-here"), {})
+
+    def test_round_trip(self):
+        desk.project_write("ada", {"apps": [{"company": "Ubisoft"}], "chat": []})
+        self.assertEqual(desk.project_read("ada")["apps"][0]["company"], "Ubisoft")
+
+    def test_one_login_cannot_see_anothers(self):
+        desk.project_write("ada", {"apps": [{"company": "Ubisoft"}]})
+        self.assertEqual(desk.project_read("bob"), {})
+
+    def test_the_project_file_is_not_listed_as_an_upload(self):
+        """It sits in the folder on purpose - Claude can read it to answer "what have I applied
+        for" - but it is bookkeeping, not something the person uploaded, and showing it back to
+        them as a file would be a lie about what is theirs."""
+        desk.project_write("ada", {"apps": []})
+        (desk.uploads_dir("ada") / "cv.txt").write_text("x", encoding="utf-8")
+        names = [f["name"] for f in desk.list_uploads("ada")]
+        self.assertIn("cv.txt", names)
+        self.assertNotIn(desk.PROJECT_FILE, names)
+
+
 class TunnelRoutes(unittest.TestCase):
     """Tunnel.routes() answers "does the PUBLIC hostname still reach us", which is a different
     question from Tunnel.alive() - and the difference is the whole bug it was written for.

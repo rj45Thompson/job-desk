@@ -462,7 +462,7 @@ function renderWho() {
     out.className = "tiny"; out.textContent = "Sign out";
     out.addEventListener("click", () => {
       user = ""; LS.set("user", "");
-      chat = []; LS.set("chat", chat); renderChat();
+      chat = []; LS.set("chat", chat); projectSave(); renderChat();
       renderWho(); refreshFiles();
     });
     w.append(document.createTextNode("Signed in as "), b, out);
@@ -476,14 +476,45 @@ function renderWho() {
       if (!v) { i.focus(); return; }
       user = v; LS.set("user", user);
       chat = []; LS.set("chat", chat); renderChat();
-      renderWho(); refreshFiles();
+      renderWho(); refreshFiles(); projectLoad();
     };
     go.addEventListener("click", signIn);
     i.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); signIn(); } });
     w.append(i, go);
   }
 }
+/* The applications and the chat live on the DESK, under this login - not in this browser.
+   They used to be localStorage only, so "the applications I've already sent" was a list that
+   existed on exactly one device and vanished with site data. A login whose stuff does not follow
+   it is not really a login. */
+let projectSaveT = null;
+async function projectLoad() {
+  if (!user) return;
+  const ok = await findDesk();
+  if (!ok || !desk.url) return;
+  try {
+    const r = await fetch(desk.url + "/project?user=" + encodeURIComponent(user), { cache: "no-store" });
+    if (!r.ok) return;
+    const p = (await r.json()).project || {};
+    // no projectSave() here: loading must not write straight back over what it just read
+    if (Array.isArray(p.apps)) { apps = p.apps; LS.set("apps", apps); renderApps(); }
+    if (Array.isArray(p.chat)) { chat = p.chat; LS.set("chat", chat); renderChat(); }
+  } catch { /* the desk is off; what is in this browser still shows */ }
+}
+function projectSave() {
+  if (!user || !desk.url) return;
+  clearTimeout(projectSaveT);
+  // debounced: typing in an application should not be one PUT per keystroke
+  projectSaveT = setTimeout(() => {
+    fetch(desk.url + "/project", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user, code, project: { apps, chat } }),
+    }).catch(() => {});
+  }, 900);
+}
+
 renderWho();
+if (user) projectLoad();
 
 /* ---------- résumé ---------- */
 const resumeBox = $("#resumeText");
@@ -621,7 +652,7 @@ $("#appForm").addEventListener("submit", (e) => {
     added: (apps.find(a => a.id === id) || {}).added || Date.now() };
   const i = apps.findIndex(a => a.id === id);
   if (i >= 0) apps[i] = rec; else { apps.push(rec); selectedApp = id; LS.set("selected", id); }
-  LS.set("apps", apps);
+  LS.set("apps", apps); projectSave();
   $("#appForm").hidden = true;
   renderApps();
 });
@@ -629,7 +660,7 @@ $("#appDelete").addEventListener("click", () => {
   const id = $("#appId").value; const a = apps.find(x => x.id === id);
   if (!a || !confirm("Delete " + (a.company || "this application") + "?")) return;
   apps = apps.filter(x => x.id !== id); if (selectedApp === id) { selectedApp = null; LS.set("selected", null); }
-  LS.set("apps", apps); $("#appForm").hidden = true; renderApps();
+  LS.set("apps", apps); projectSave(); $("#appForm").hidden = true; renderApps();
 });
 $("#contextClear").addEventListener("click", () => { selectedApp = null; LS.set("selected", null); renderApps(); });
 
@@ -646,8 +677,8 @@ $("#importFile").addEventListener("change", async (e) => {
     if (!confirm("Replace what is in this browser with " + f.name + "?")) return;
     if (j.profile && typeof j.profile === "object") { profile = j.profile; LS.set("profile", profile); $$("[data-p]").forEach(el => el.value = profile[el.dataset.p] || ""); }
     if (typeof j.resume === "string") { resume = j.resume; LS.set("resume", resume); resumeBox.value = resume; resumeCount(); }
-    if (Array.isArray(j.apps)) { apps = j.apps.filter(a => a && a.id); LS.set("apps", apps); }
-    if (Array.isArray(j.chat)) { chat = j.chat.filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string"); LS.set("chat", chat); renderChat(); }
+    if (Array.isArray(j.apps)) { apps = j.apps.filter(a => a && a.id); LS.set("apps", apps); projectSave(); }
+    if (Array.isArray(j.chat)) { chat = j.chat.filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string"); LS.set("chat", chat); projectSave(); renderChat(); }
     renderApps(); toast("Imported " + f.name);
   } catch (err) { toast("Could not import that file: " + err.message, true); }
   e.target.value = "";
@@ -736,7 +767,7 @@ async function send(text) {
     if (!(await findDesk())) { note("No desk is reachable. On your computer, run Desk.cmd (py desk.py) and this page will connect by itself.", true); return; }
   }
   chat.push({ role: "user", content: text });
-  chat = chat.slice(-60); LS.set("chat", chat);
+  chat = chat.slice(-60); LS.set("chat", chat); projectSave();
   if (!chat.length || chat.length === 1) $("#messages").innerHTML = "";
   bubble("user", text);
   $("#input").value = ""; autosize();
@@ -779,19 +810,19 @@ async function send(text) {
     if (!r.ok || !j || typeof j.text !== "string") {
       const ecode = j && j.error && j.error.code || "";
       const msg = j && j.error && j.error.message || ("The desk answered " + r.status + ".");
-      chat.pop(); LS.set("chat", chat);            // the question did not land; keep it in the box
+      chat.pop(); LS.set("chat", chat); projectSave();            // the question did not land; keep it in the box
       $("#input").value = text; autosize();
       if (ecode === "code_required" || ecode === "code_refused") { pendingAfterCode = text; askCode(msg); return; }
       note(msg, true);
       if (ecode === "signed_out") { desk.info = Object.assign({}, desk.info, { signedIn: false }); }
       return;
     }
-    chat.push({ role: "assistant", content: j.text }); LS.set("chat", chat);
+    chat.push({ role: "assistant", content: j.text }); LS.set("chat", chat); projectSave();
     bubble("assistant", j.text); scrollDown();
     if (desk.info) desk.info.signedIn = true;
   } catch (e) {
     think.remove();
-    chat.pop(); LS.set("chat", chat);
+    chat.pop(); LS.set("chat", chat); projectSave();
     $("#input").value = text; autosize();
     if (e && e.name === "AbortError") { note("Stopped."); }
     else { note("Lost the desk while asking (" + (e && e.message || e) + "). Looking for it again.", true); desk = { url: "", kind: "", info: null }; findDesk(); }
@@ -805,7 +836,7 @@ $("#stop").addEventListener("click", () => { if (ctl) ctl.abort(); });
 $("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send($("#input").value); } });
 function autosize() { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(220, t.scrollHeight) + "px"; }
 $("#input").addEventListener("input", autosize);
-$("#newChat").addEventListener("click", () => { if (!chat.length || confirm("Start a new chat? The old one is cleared from this browser.")) { chat = []; LS.set("chat", chat); renderChat(); } });
+$("#newChat").addEventListener("click", () => { if (!chat.length || confirm("Start a new chat? The old one is cleared from this browser.")) { chat = []; LS.set("chat", chat); projectSave(); renderChat(); } });
 $$(".chip").forEach(c => c.addEventListener("click", () => {
   if (c.hasAttribute("data-needs-app") && !currentApp()) { toast("Pick an application first, so the draft has a posting to work from."); go("apps"); return; }
   $("#input").value = c.dataset.prompt; autosize(); send(c.dataset.prompt);
