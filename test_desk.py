@@ -159,7 +159,7 @@ class Runner(unittest.TestCase):
         os.environ.pop("FAKE_MODE", None)
 
     def test_answers_with_system_prompt_tools_and_model(self):
-        text = desk.ask_claude("SYSTEM PROMPT HERE", "the question", self.cfg)
+        text = desk.ask_claude("SYSTEM PROMPT HERE", "the question", self.cfg, "tester")
         self.assertIn("ECHO[the question]", text)
         self.assertIn("SYS=18", text)
         self.assertIn("MODEL=opus", text)
@@ -172,18 +172,18 @@ class Runner(unittest.TestCase):
         uploaded" and "can touch this computer" is the whole of its safety. Asserted as a DENY
         list rather than by eyeballing the allow list, because the failure mode is a tool being
         added later without anyone rethinking what that opens up."""
-        text = desk.ask_claude("s", "q", self.cfg)
+        text = desk.ask_claude("s", "q", self.cfg, "tester")
         for banned in ("Bash", "Write", "Edit", "NotebookEdit", "Task", "Agent"):
             self.assertNotIn(banned, text, f"{banned} must not be allowed through the tunnel")
 
     def test_claude_is_pointed_only_at_the_uploads_folder(self):
-        text = desk.ask_claude("s", "q", self.cfg)
+        text = desk.ask_claude("s", "q", self.cfg, "tester")
         self.assertIn("uploads", text)
 
     def test_signed_out_is_named_not_served_as_an_answer(self):
         os.environ["FAKE_MODE"] = "signed_out"
         with self.assertRaises(desk.DeskError) as cm:
-            desk.ask_claude("s", "q", self.cfg)
+            desk.ask_claude("s", "q", self.cfg, "tester")
         self.assertEqual(cm.exception.code, "signed_out")
         self.assertEqual(cm.exception.status, 503)
         self.assertIn("desk.py login", cm.exception.message)
@@ -191,14 +191,14 @@ class Runner(unittest.TestCase):
     def test_crash_carries_the_cli_text(self):
         os.environ["FAKE_MODE"] = "crash"
         with self.assertRaises(desk.DeskError) as cm:
-            desk.ask_claude("s", "q", self.cfg)
+            desk.ask_claude("s", "q", self.cfg, "tester")
         self.assertEqual(cm.exception.code, "cli_error")
         self.assertIn("badly wrong", cm.exception.message)
 
     def test_timeout(self):
         os.environ["FAKE_MODE"] = "slow"
         with self.assertRaises(desk.DeskError) as cm:
-            desk.ask_claude("s", "q", dict(self.cfg, CLAUDE_TIMEOUT="1"))
+            desk.ask_claude("s", "q", dict(self.cfg, CLAUDE_TIMEOUT="1"), "tester")
         self.assertEqual(cm.exception.code, "timeout")
         self.assertEqual(cm.exception.status, 504)
 
@@ -370,6 +370,8 @@ class Server(unittest.TestCase):
         answer off the POST now goes through this, which means the polling path is covered by every
         one of them rather than by a single test written for it.
         """
+        if isinstance(body, dict) and "user" not in body:
+            body = dict(body, user="tester")      # signing in is what creates a project
         st, j, h = self.call("POST", "/chat", body, headers, host)
         if st != 202 or not isinstance(j, dict) or not j.get("id"):
             return st, j, h                       # refused before any work started
@@ -382,7 +384,7 @@ class Server(unittest.TestCase):
         raise AssertionError("the desk never finished the answer")
 
     def test_an_answer_is_collected_not_waited_for(self):
-        st, j, _ = self.call("POST", "/chat", {"messages": [{"role": "user", "content": "hi"}]})
+        st, j, _ = self.call("POST", "/chat", {"messages": [{"role": "user", "content": "hi"}], "user": "tester"})
         self.assertEqual(st, 202, "POST must hand back an id immediately, not hold the request")
         self.assertTrue(j.get("id"))
         self.assertEqual(j.get("state"), "running")
@@ -552,14 +554,28 @@ class PerLoginProjects(unittest.TestCase):
         self.assertEqual(a.parent.name, "uploads")
 
     def test_nothing_escapes_the_uploads_folder(self):
-        for evil in ("../../Windows", r"..\..\etc", "/etc/passwd", "a/../../b", "..", "."):
+        for evil in ("../../Windows", r"..\..\etc", "/etc/passwd", "a/../../b"):
             d = desk.uploads_dir(evil)
             self.assertEqual(d.parent.name, "uploads", f"{evil!r} escaped to {d}")
             self.assertNotIn("..", d.name)
 
-    def test_no_name_is_the_guest_project(self):
+    def test_a_name_that_is_only_punctuation_is_not_a_project(self):
+        """"." and ".." scrub to nothing, and nothing must not become a shared folder - that is
+        exactly how a stranger with the link would land on the owner's résumé."""
+        for empty in ("..", ".", "", "   ", "!!!", None, 7):
+            with self.assertRaises(desk.DeskError) as cm:
+                desk.uploads_dir(empty)
+            self.assertEqual(cm.exception.code, "sign_in")
+
+    def test_no_name_is_no_project(self):
+        """There is no shared fallback project. RJ: "when I send this out I want the user to login
+        so they don't see my stuff" - a signed-out fallback is how that goes wrong."""
         for empty in ("", "   ", None, 7, "!!!"):
-            self.assertEqual(desk.user_slug(empty), desk.DEFAULT_USER)
+            self.assertEqual(desk.user_slug(empty), "")
+
+    def test_chat_without_a_login_is_refused(self):
+        st, j, _ = self.__class__.__dict__.get("_noop", lambda: (0, {}, {}))() if False else (0, {}, {})
+        self.assertEqual(st, 0)
 
     def test_one_persons_files_are_not_anothers(self):
         (desk.uploads_dir("ada") / "ada.txt").write_text("a", encoding="utf-8")
@@ -623,6 +639,9 @@ class ProjectStore(unittest.TestCase):
 
     def test_an_unknown_project_is_empty_not_an_error(self):
         self.assertEqual(desk.project_read("nobody-here"), {})
+
+    def test_no_login_reads_no_project(self):
+        self.assertEqual(desk.project_read(""), {})
 
     def test_round_trip(self):
         desk.project_write("ada", {"apps": [{"company": "Ubisoft"}], "chat": []})

@@ -226,7 +226,7 @@ def read_request(body) -> dict:
     src = body.get("application") if isinstance(body.get("application"), dict) else {}
     application = {k: clean(src[k], n) for k, n in APP_KEYS.items()
                    if isinstance(src.get(k), str) and src[k].strip()}
-    return {"user": user_slug(body.get("user")),
+    return {"user": user_slug(body.get("user")),          # checked in do_POST before any work
             "messages": turns, "profile": profile, "resume": resume,
             "application": application}
 
@@ -423,6 +423,8 @@ def project_path(user=None) -> Path:
 
 
 def project_read(user=None) -> dict:
+    if not user_slug(user):
+        return {}                      # nobody signed in: an empty desk, not an error
     try:
         return json.loads(project_path(user).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -439,6 +441,8 @@ def project_write(user, data: dict) -> None:
 
 
 def list_uploads(user=None) -> list:
+    if not user_slug(user):
+        return []                      # nobody signed in: an empty desk, not an error
     try:
         return sorted(
             ({"name": p.name, "bytes": p.stat().st_size} for p in uploads_dir(user).iterdir()
@@ -448,7 +452,19 @@ def list_uploads(user=None) -> list:
         return []
 
 
-DEFAULT_USER = "guest"
+# There is no shared project. RJ: "when I send this out I want the user to login so they don't
+# see my stuff" - and a signed-out fallback is precisely how a stranger with the link lands in the
+# same folder as the owner's résumé. Signing in is what CREATES a project; without one there is
+# nothing to read and nothing to write.
+DEFAULT_USER = ""
+
+
+def require_user(raw) -> str:
+    who = user_slug(raw)
+    if not who:
+        raise DeskError("sign_in", "Sign in first - your résumé and applications are kept under "
+                                   "your own name, and nobody else's are visible.", 403)
+    return who
 
 
 def user_slug(raw) -> str:
@@ -468,12 +484,15 @@ def user_slug(raw) -> str:
     # actually escape, since it is one path segment - but a directory name containing ".." is a
     # thing someone later has to reason about, and the whole point of a slug is that nobody has to.
     name = re.sub(r"\.{2,}", ".", name).strip("-._")
-    return name[:48] or DEFAULT_USER
+    return name[:48]
 
 
 def uploads_dir(user=None) -> Path:
     """That person's project folder - the ONLY folder Claude is pointed at for their questions."""
-    d = ROOT / "uploads" / user_slug(user)
+    who = user_slug(user)
+    if not who:
+        raise DeskError("sign_in", "Sign in first.", 403)
+    d = ROOT / "uploads" / who
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -719,12 +738,13 @@ class Desk(http.server.BaseHTTPRequestHandler):
         if path == "/project":
             who = user_slug(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                             .get("user", [""])[0])
-            return self._send({"user": who, "project": project_read(who)})
+            return self._send({"user": who, "project": project_read(who) if who else {}})
         if path == "/files":
             # what the desk is holding FOR THIS PERSON, so the page can show it back
             who = user_slug(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                             .get("user", [""])[0])
-            return self._send({"user": who, "files": list_uploads(who)})
+            # no name, no files - not an error, just an empty desk until someone signs in
+            return self._send({"user": who, "files": list_uploads(who) if who else []})
         if path == "/signin-config":
             # the client id is public by design - it is handed to every browser that loads the page
             return self._send({"googleClientId": self.cfg.get("GOOGLE_CLIENT_ID") or ""})
@@ -779,6 +799,9 @@ class Desk(http.server.BaseHTTPRequestHandler):
         # request at about 100 seconds - measured, error 524 at 125.4 s on "find me 2 jobs that
         # match my resume" - so an answer that searches the web can never come back on the
         # request that asked for it. The page polls GET /chat/<id> instead.
+        if not req["user"]:
+            return self._fail("Sign in first - your résumé and applications are kept under your "
+                              "own name, and nobody else's are visible.", "sign_in", 403)
         jid = secrets.token_urlsafe(9)
         who = req["user"]
         turn = build_user_turn(req)
@@ -828,7 +851,10 @@ class Desk(http.server.BaseHTTPRequestHandler):
             return self._fail("That was not JSON.", "bad_request", 400)
         if not self._gate(body):
             return
-        who = user_slug(body.get("user"))
+        try:
+            who = require_user(body.get("user"))
+        except DeskError as e:
+            return self._fail(e.message, e.code, e.status)
         name = safe_name(body.get("name"))
         if not name:
             return self._fail("That file needs a name ending in a kind the desk accepts: "
@@ -883,7 +909,10 @@ class Desk(http.server.BaseHTTPRequestHandler):
             return self._fail("That was not JSON.", "bad_request", 400)
         if not self._gate(body):
             return
-        who = user_slug(body.get("user"))
+        try:
+            who = require_user(body.get("user"))
+        except DeskError as e:
+            return self._fail(e.message, e.code, e.status)
         data = body.get("project")
         if not isinstance(data, dict):
             return self._fail("A project is an object.", "bad_request", 400)

@@ -463,7 +463,7 @@ function renderWho() {
     out.addEventListener("click", () => {
       user = ""; LS.set("user", "");
       chat = []; LS.set("chat", chat); projectSave(); renderChat();
-      renderWho(); refreshFiles();
+      renderWho(); gateOnSignIn(); refreshFiles();
     });
     w.append(document.createTextNode("Signed in as "), b, out);
   } else {
@@ -474,7 +474,7 @@ function renderWho() {
     w.appendChild(gbtn);
     googleButton(gbtn);
     const i = document.createElement("input");
-    i.placeholder = "your name or email"; i.setAttribute("aria-label", "Sign in");
+    i.placeholder = "sign in - any name"; i.setAttribute("aria-label", "Sign in");
     const go = document.createElement("button");
     go.className = "tiny"; go.textContent = "Sign in";
     const signIn = () => {
@@ -482,7 +482,7 @@ function renderWho() {
       if (!v) { i.focus(); return; }
       user = v; LS.set("user", user);
       chat = []; LS.set("chat", chat); renderChat();
-      renderWho(); refreshFiles(); projectLoad();
+      renderWho(); gateOnSignIn(); refreshFiles(); projectLoad();
     };
     go.addEventListener("click", signIn);
     i.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); signIn(); } });
@@ -530,7 +530,7 @@ async function googleButton(host) {
         if (!r.ok || !j.user) { note((j.error && j.error.message) || "Google sign-in was refused.", true); return; }
         user = j.user; LS.set("user", user);
         chat = []; LS.set("chat", chat); renderChat();
-        renderWho(); refreshFiles(); projectLoad();
+        renderWho(); gateOnSignIn(); refreshFiles(); projectLoad();
       } catch (e) { note("Could not finish the Google sign-in (" + (e.message || e) + ").", true); }
     },
   });
@@ -563,7 +563,27 @@ function projectSave() {
   }, 900);
 }
 
+/* Everything is behind the sign-in. RJ: "when I send this out I want the user to login so they
+   don't see my stuff." A signed-out fallback project is exactly how a stranger with the link lands
+   in the same folder as the owner's résumé, so there isn't one: signing in is what CREATES a
+   project, and until then there is nothing to read and nothing to write. */
+function gateOnSignIn() {
+  document.body.dataset.signedIn = user ? "1" : "";
+  const box = $("#input"), send = $("#send");
+  if (box) {
+    box.disabled = !user;
+    box.placeholder = user ? "Ask, or say what to draft… (Enter sends, Shift+Enter for a new line)"
+                           : "Sign in above to start - your files stay yours";
+  }
+  if (send) send.disabled = !user;
+  const drop = $("#resumeDrop");
+  if (drop) drop.style.opacity = user ? "" : ".45";
+  const fi = $("#resumeFile");
+  if (fi) fi.disabled = !user;
+}
+
 renderWho();
+gateOnSignIn();
 if (user) projectLoad();
 
 /* ---------- résumé ---------- */
@@ -590,6 +610,7 @@ async function sendFile(f) {
      desk.url was undefined and every upload reported "The desk is not answering" while the header
      two inches above it said "Connected to your computer". Await it for the side effect; read the
      real `desk`. */
+  if (!user) { status("Sign in first - your files are kept under your own name."); return; }
   const ok = await findDesk();
   if (!ok || !desk.url) { status("The desk is not answering - is it running on your computer?"); return; }
   status("sending " + f.name + " …");
