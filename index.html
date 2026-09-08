@@ -457,8 +457,13 @@ function status(msg) { $("#resumeStatus").textContent = msg || " "; }
 
 async function sendFile(f) {
   if (!f) return;
-  const desk = await findDesk();
-  if (!desk || !desk.url) { status("The desk is not answering - is it running on your computer?"); return; }
+  /* findDesk() returns a BOOLEAN - !!desk.url - and sets the module-level `desk` as its side
+     effect. Writing `const desk = await findDesk()` shadowed the real object with `true`, so
+     desk.url was undefined and every upload reported "The desk is not answering" while the header
+     two inches above it said "Connected to your computer". Await it for the side effect; read the
+     real `desk`. */
+  const ok = await findDesk();
+  if (!ok || !desk.url) { status("The desk is not answering - is it running on your computer?"); return; }
   status("sending " + f.name + " …");
   const data = await new Promise((ok, no) => {
     const r = new FileReader();
@@ -487,8 +492,8 @@ function renderFiles(files) {
 }
 
 async function refreshFiles() {
-  const desk = await findDesk();
-  if (!desk || !desk.url) return;
+  const ok = await findDesk();          // boolean; `desk` is the module-level object it sets
+  if (!ok || !desk.url) return;
   try {
     const r = await fetch(desk.url + "/files", { cache: "no-store" });
     if (r.ok) renderFiles((await r.json()).files || []);
