@@ -568,6 +568,55 @@ class PerLoginProjects(unittest.TestCase):
         self.assertIn("ada.txt", [f["name"] for f in desk.list_uploads("ada")])
 
 
+class GoogleSignIn(unittest.TestCase):
+    """Every one of these is a hole if the check is missing, which is why they are asserted
+    individually rather than through one happy-path test."""
+
+    GOOD = {"aud": "CID.apps.googleusercontent.com", "iss": "https://accounts.google.com",
+            "email": "Ada@Example.com", "email_verified": "true", "name": "Ada", "sub": "1"}
+
+    def _with(self, claims, cid="CID.apps.googleusercontent.com"):
+        payload = json.dumps(claims).encode()
+        fake = mock.MagicMock()
+        fake.__enter__.return_value.read.return_value = payload
+        with mock.patch.object(desk.urllib.request, "urlopen", return_value=fake):
+            return desk.google_identity("x" * 100, cid)
+
+    def test_a_good_token_signs_you_in_lowercased(self):
+        self.assertEqual(self._with(self.GOOD)["email"], "ada@example.com")
+
+    def test_a_token_for_another_app_is_refused(self):
+        """Without the aud check, a token minted for ANY other Google app signs someone in here."""
+        with self.assertRaises(desk.DeskError) as cm:
+            self._with(dict(self.GOOD, aud="someone-elses-app"))
+        self.assertEqual(cm.exception.code, "wrong_audience")
+
+    def test_a_token_not_from_google_is_refused(self):
+        with self.assertRaises(desk.DeskError) as cm:
+            self._with(dict(self.GOOD, iss="https://evil.example"))
+        self.assertEqual(cm.exception.code, "wrong_issuer")
+
+    def test_an_unverified_address_is_refused(self):
+        """Or an unverified address could impersonate a real one."""
+        with self.assertRaises(desk.DeskError) as cm:
+            self._with(dict(self.GOOD, email_verified="false"))
+        self.assertEqual(cm.exception.code, "unverified")
+
+    def test_no_client_id_means_google_sign_in_is_off(self):
+        with self.assertRaises(desk.DeskError) as cm:
+            self._with(self.GOOD, cid="")
+        self.assertEqual(cm.exception.code, "google_off")
+
+    def test_google_being_unreachable_is_not_a_sign_in(self):
+        with mock.patch.object(desk.urllib.request, "urlopen", side_effect=OSError("down")):
+            with self.assertRaises(desk.DeskError) as cm:
+                desk.google_identity("x" * 100, "CID.apps.googleusercontent.com")
+        self.assertEqual(cm.exception.code, "google_unreachable")
+
+    def test_the_email_becomes_the_project_folder(self):
+        self.assertEqual(desk.user_slug(self._with(self.GOOD)["email"]), "ada")
+
+
 class ProjectStore(unittest.TestCase):
     """Applications and chat live on the desk under the login, so they follow the person to their
     phone instead of dying with one browser's site data."""

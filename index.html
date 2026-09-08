@@ -467,6 +467,12 @@ function renderWho() {
     });
     w.append(document.createTextNode("Signed in as "), b, out);
   } else {
+    // Google's own button, when the desk has a client id. Its script is loaded lazily so the page
+    // still opens instantly, and still works with no network, for the typed-name sign-in below.
+    const gbtn = document.createElement("div");
+    gbtn.id = "gbtn";
+    w.appendChild(gbtn);
+    googleButton(gbtn);
     const i = document.createElement("input");
     i.placeholder = "your name or email"; i.setAttribute("aria-label", "Sign in");
     const go = document.createElement("button");
@@ -487,6 +493,50 @@ function renderWho() {
    They used to be localStorage only, so "the applications I've already sent" was a list that
    existed on exactly one device and vanished with site data. A login whose stuff does not follow
    it is not really a login. */
+/* ---- Sign in with Google.
+   Google hands the browser an ID token; the browser posts it to the desk; the DESK asks Google
+   whether it is real and who it belongs to. Checking it only here would not be a login at all -
+   anyone can post any JSON to /signin over the tunnel. The email Google returns becomes the
+   project, so everything already keyed on a login keeps working untouched. */
+let googleReady = null;
+async function googleButton(host) {
+  const ok = await findDesk();
+  if (!ok || !desk.url) return;
+  let cid = "";
+  try {
+    const r = await fetch(desk.url + "/signin-config", { cache: "no-store" });
+    cid = r.ok ? ((await r.json()).googleClientId || "") : "";
+  } catch { return; }
+  if (!cid) return;                    // not configured: the typed-name sign-in stays
+  if (!googleReady) {
+    googleReady = new Promise((res, rej) => {
+      const sc = document.createElement("script");
+      sc.src = "https://accounts.google.com/gsi/client";
+      sc.async = true; sc.defer = true;
+      sc.onload = res; sc.onerror = () => rej(new Error("google sign-in script blocked"));
+      document.head.appendChild(sc);
+    });
+  }
+  try { await googleReady; } catch { return; }
+  window.google.accounts.id.initialize({
+    client_id: cid,
+    callback: async (resp) => {
+      try {
+        const r = await fetch(desk.url + "/signin", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id_token: resp.credential, code }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.user) { note((j.error && j.error.message) || "Google sign-in was refused.", true); return; }
+        user = j.user; LS.set("user", user);
+        chat = []; LS.set("chat", chat); renderChat();
+        renderWho(); refreshFiles(); projectLoad();
+      } catch (e) { note("Could not finish the Google sign-in (" + (e.message || e) + ").", true); }
+    },
+  });
+  window.google.accounts.id.renderButton(host, { theme: "outline", size: "medium", text: "signin_with" });
+}
+
 let projectSaveT = null;
 async function projectLoad() {
   if (!user) return;

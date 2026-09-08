@@ -73,6 +73,9 @@ DEFAULTS = {
     # a résumé question is ~20 s, and a real job search (several searches, several page fetches)
     # ran past 240 s and was killed mid-answer. Measured, not guessed.
     "CLAUDE_TIMEOUT": "900",
+    # A Google OAuth *Web application* client id. Public, not a secret - it is handed to the page.
+    # Empty means no Google button and the typed-name sign-in, so the demo works unconfigured.
+    "GOOGLE_CLIENT_ID": "",
     "GITHUB_TOKEN": "",
 }
 
@@ -373,6 +376,42 @@ def safe_name(raw) -> str:
         return ""
     stem = re.sub(r"[^A-Za-z0-9 ._-]", "_", stem)[:80].strip(" .") or "file"
     return stem + ext
+
+
+GOOGLE_ISS = ("accounts.google.com", "https://accounts.google.com")
+GOOGLE_TOKENINFO = "https://oauth2.googleapis.com/tokeninfo?id_token="
+
+
+def google_identity(id_token: str, client_id: str) -> dict:
+    """Who Google says this token belongs to, or a DeskError.
+
+    Asked of Google rather than verified here: desk.py is stdlib-only and the standard library
+    cannot verify RS256, so the alternative is a crypto dependency to re-do a check Google will
+    do in one request. See this patch's note for when that stops being the right trade.
+    """
+    if not client_id:
+        raise DeskError("google_off", "This desk has no Google sign-in configured.", 503)
+    if not isinstance(id_token, str) or not 20 < len(id_token) < 8000:
+        raise DeskError("bad_token", "That sign-in did not look like a Google token.", 400)
+    try:
+        req = urllib.request.Request(GOOGLE_TOKENINFO + urllib.parse.quote(id_token, safe=""),
+                                     headers={"User-Agent": "job-desk"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            claims = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:                                 # noqa: BLE001 - any failure is "no"
+        raise DeskError("google_unreachable",
+                        f"Could not check that sign-in with Google ({e}).", 502)
+    # Each of these would be a hole on its own; see the note at the top of this patch.
+    if claims.get("aud") != client_id:
+        raise DeskError("wrong_audience", "That sign-in was for a different app.", 403)
+    if claims.get("iss") not in GOOGLE_ISS:
+        raise DeskError("wrong_issuer", "That sign-in did not come from Google.", 403)
+    if str(claims.get("email_verified", "")).lower() not in ("true", "1"):
+        raise DeskError("unverified", "That Google address is not verified.", 403)
+    email = (claims.get("email") or "").strip().lower()
+    if not email:
+        raise DeskError("no_email", "Google did not return an address for that sign-in.", 403)
+    return {"email": email, "name": claims.get("name") or "", "sub": claims.get("sub") or ""}
 
 
 PROJECT_FILE = "project.json"
@@ -686,6 +725,9 @@ class Desk(http.server.BaseHTTPRequestHandler):
             who = user_slug(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                             .get("user", [""])[0])
             return self._send({"user": who, "files": list_uploads(who)})
+        if path == "/signin-config":
+            # the client id is public by design - it is handed to every browser that loads the page
+            return self._send({"googleClientId": self.cfg.get("GOOGLE_CLIENT_ID") or ""})
         if path == "/desk.json":
             return self._send({"url": self.state.get("tunnel", ""),
                                "since": self.state.get("since", "")})
@@ -708,6 +750,8 @@ class Desk(http.server.BaseHTTPRequestHandler):
             return self._upload()
         if path == "/project":
             return self._project()
+        if path == "/signin":
+            return self._signin()
         if path != "/chat":
             return self._fail("Not found.", "not_found", 404)
         try:
@@ -800,6 +844,29 @@ class Desk(http.server.BaseHTTPRequestHandler):
         log(f"upload  {who}/{name}  {len(blob)} bytes")
         self._send({"ok": True, "name": name, "bytes": len(blob), "user": who,
                     "files": list_uploads(who)})
+
+    def _signin(self):
+        """Turn a Google ID token into a signed-in login, after Google confirms it."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 16384:
+            return self._fail("Bad sign-in.", "bad_request", 400)
+        try:
+            body = json.loads(self.rfile.read(n).decode("utf-8", "replace"))
+        except ValueError:
+            return self._fail("That was not JSON.", "bad_request", 400)
+        if not self._gate(body):
+            return
+        try:
+            who = google_identity(body.get("id_token"), self.cfg.get("GOOGLE_CLIENT_ID") or "")
+        except DeskError as e:
+            log(f"signin  refused: {e.code}")
+            return self._fail(e.message, e.code, e.status)
+        log(f"signin  {who['email']}")
+        self._send({"ok": True, "user": who["email"], "name": who["name"],
+                    "project": user_slug(who["email"])})
 
     def _project(self):
         """Save one login's applications and chat, so they follow the login rather than the browser."""
