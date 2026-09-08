@@ -38,10 +38,11 @@ if mode == "crash":
     print("something went badly wrong", file=sys.stderr); sys.exit(2)
 system = open(args[args.index("--system-prompt-file") + 1], encoding="utf-8").read()
 model = args[args.index("--model") + 1]
-tools = args[args.index("--tools") + 1]
+tools = args[args.index("--allowed-tools") + 1]
+adddir = args[args.index("--add-dir") + 1]
 print("noise line before the json")
 print(json.dumps({"type": "result", "is_error": False,
-                  "result": f"ECHO[{user[-60:]}] SYS={len(system)} MODEL={model} TOOLS={tools!r}"}))
+                  "result": f"ECHO[{user[-60:]}] SYS={len(system)} MODEL={model} TOOLS={tools!r} DIR={adddir!r}"}))
 '''
 
 
@@ -156,12 +157,27 @@ class Runner(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("FAKE_MODE", None)
 
-    def test_answers_with_system_prompt_no_tools_and_model(self):
+    def test_answers_with_system_prompt_tools_and_model(self):
         text = desk.ask_claude("SYSTEM PROMPT HERE", "the question", self.cfg)
         self.assertIn("ECHO[the question]", text)
         self.assertIn("SYS=18", text)
         self.assertIn("MODEL=opus", text)
-        self.assertIn("TOOLS=''", text)
+        # it can read what was uploaded and look at the web
+        for t in ("Read", "WebSearch", "WebFetch"):
+            self.assertIn(t, text)
+
+    def test_it_cannot_change_or_run_anything(self):
+        """The desk is reachable through a tunnel, so the line between "can read the resume you
+        uploaded" and "can touch this computer" is the whole of its safety. Asserted as a DENY
+        list rather than by eyeballing the allow list, because the failure mode is a tool being
+        added later without anyone rethinking what that opens up."""
+        text = desk.ask_claude("s", "q", self.cfg)
+        for banned in ("Bash", "Write", "Edit", "NotebookEdit", "Task", "Agent"):
+            self.assertNotIn(banned, text, f"{banned} must not be allowed through the tunnel")
+
+    def test_claude_is_pointed_only_at_the_uploads_folder(self):
+        text = desk.ask_claude("s", "q", self.cfg)
+        self.assertIn("uploads", text)
 
     def test_signed_out_is_named_not_served_as_an_answer(self):
         os.environ["FAKE_MODE"] = "signed_out"
@@ -459,6 +475,31 @@ class Server(unittest.TestCase):
             page = r.read().decode("utf-8")
         self.assertIn("<!doctype html>", page.lower())
         self.assertIn("Job Desk", page)
+
+
+class SafeName(unittest.TestCase):
+    """safe_name() is the only thing between a tunnel-supplied string and a write on RJ's disk."""
+
+    def test_keeps_a_plain_name(self):
+        self.assertEqual(desk.safe_name("RJ_Thompson_Resume.pdf"), "RJ_Thompson_Resume.pdf")
+
+    def test_strips_any_path(self):
+        for evil in (r"..\..\Windows\System32\evil.pdf",
+                     "../../../etc/passwd.pdf",
+                     "/tmp/x.pdf",
+                     r"C:\Users\r_jay\.ssh\id_rsa.pdf"):
+            got = desk.safe_name(evil)
+            self.assertNotIn("/", got)
+            self.assertNotIn("\\", got)
+            self.assertNotIn("..", got)
+            self.assertTrue(got.endswith(".pdf"), got)
+
+    def test_refuses_a_kind_the_desk_does_not_take(self):
+        for bad in ("payload.exe", "run.bat", "x.ps1", "noextension", "", None, 7):
+            self.assertEqual(desk.safe_name(bad), "")
+
+    def test_case_of_the_extension_does_not_matter(self):
+        self.assertEqual(desk.safe_name("Resume.PDF"), "Resume.pdf")
 
 
 class TunnelRoutes(unittest.TestCase):

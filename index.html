@@ -139,6 +139,8 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
     text-align:center;background:rgba(127,160,200,.05);transition:border-color .15s,background .15s}
   .drop:hover,.drop.over{border-color:var(--accent,#1f5f9e);background:rgba(31,95,158,.09)}
   .drop strong{font-size:15px}
+  .filelist{margin:10px 0 4px}
+  .filerow{padding:7px 10px;border:1px solid var(--line,#dde3ea);border-radius:8px;margin-bottom:6px}
   body[data-tab="chat"] .side{display:none}
   body:not([data-tab="chat"]) .chatpane{display:none}
   .grid2{grid-template-columns:1fr}
@@ -185,11 +187,13 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
         is nothing else to fill in. It stays in this browser and goes with every question.</p>
       <label class="drop" id="resumeDrop">
         <input type="file" id="resumeFile" accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,text/plain,text/markdown" hidden>
-        <strong>Drop a PDF, Word file, or text here</strong>
-        <span class="tiny">or click to choose · .pdf .docx .txt .md</span>
+        <strong>Drop your résumé here</strong>
+        <span class="tiny">or click to choose · PDF, Word, text · Claude reads it on your computer</span>
       </label>
       <p class="hint" id="resumeStatus">&nbsp;</p>
-      <textarea id="resumeText" placeholder="…or paste it here"></textarea>
+      <div id="fileList" class="filelist"><div class="empty">Nothing on the desk yet.</div></div>
+      <details><summary class="tiny">…or paste the text instead</summary>
+        <textarea id="resumeText" placeholder="Paste your résumé here"></textarea></details>
       <div class="row">
         <span class="hint" id="resumeCount"></span>
         <button class="tiny" id="resumeClear">Clear</button>
@@ -440,81 +444,59 @@ resumeBox.value = resume;
 function resumeCount() { $("#resumeCount").textContent = resume ? resume.length.toLocaleString() + " characters" : "nothing saved yet"; }
 resumeCount();
 resumeBox.addEventListener("input", () => { resume = resumeBox.value; LS.set("resume", resume); resumeCount(); });
-/* ---- reading a real résumé.
-   .txt and .md were the only formats accepted before, which are the ones almost nobody has: a
-   résumé is a PDF. pdf.js and mammoth are pinned on cdnjs and loaded LAZILY - only when a file of
-   that type actually arrives - so the page still opens instantly, and still works with no network
-   at all for someone pasting text. */
-const CDN = {
-  pdf: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js",
-  pdfWorker: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js",
-  docx: "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js",
-};
-const loaded = {};
-function loadScript(url) {
-  if (loaded[url]) return loaded[url];
-  loaded[url] = new Promise((ok, no) => {
-    const s = document.createElement("script");
-    s.src = url; s.onload = ok;
-    s.onerror = () => no(new Error("could not load " + url));
-    document.head.appendChild(s);
-  });
-  return loaded[url];
-}
-function status(msg) { $("#resumeStatus").textContent = msg || "\u00a0"; }
+/* ---- the file goes to the DESK, and Claude reads it there.
+   The previous version of this parsed the PDF in the browser: pdf.js and mammoth off a CDN, lazy
+   loading, line reconstruction from baseline y coordinates, a path for scanned pages. All of it to
+   turn a résumé into a string to put in a prompt. RJ, looking at it: "this should be easy not hard.
+   If it's hard you're doing it wrong. This is just claude opus exposed, that's it." He was right -
+   Claude reads a PDF. Measured with his own résumé through the plain CLI:
+     claude -p "Read RJ_Thompson_Resume.pdf ... name and title" --allowedTools Read --add-dir .
+     -> "R.J. Thompson - Senior C++ / C# engineer ..."
+   So the browser's whole job is to hand the bytes over. About two hundred lines became this. */
+function status(msg) { $("#resumeStatus").textContent = msg || " "; }
 
-async function textFromPdf(file) {
-  await loadScript(CDN.pdf);
-  window.pdfjsLib.GlobalWorkerOptions.workerSrc = CDN.pdfWorker;
-  const doc = await window.pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
-  const pages = [];
-  for (let i = 1; i <= doc.numPages; i++) {
-    status(`reading page ${i} of ${doc.numPages}\u2026`);
-    const items = (await (await doc.getPage(i)).getTextContent()).items;
-    /* pdf.js gives positioned runs, not lines. Joining them naively runs the whole page into one
-       paragraph and a résumé becomes unreadable, so break on the y coordinate: a new line whenever
-       the baseline moves by more than a couple of points. */
-    let out = "", lastY = null;
-    for (const it of items) {
-      const y = it.transform[5];
-      if (lastY !== null && Math.abs(y - lastY) > 2) out += "\n";
-      else if (out && !out.endsWith(" ") && !out.endsWith("\n")) out += " ";
-      out += it.str;
-      lastY = y;
-    }
-    pages.push(out.trim());
-  }
-  return pages.join("\n\n");
-}
-
-async function textFromDocx(file) {
-  await loadScript(CDN.docx);
-  const r = await window.mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
-  return r.value;
-}
-
-async function takeResumeFile(f) {
+async function sendFile(f) {
   if (!f) return;
-  const name = (f.name || "").toLowerCase();
+  const desk = await findDesk();
+  if (!desk || !desk.url) { status("The desk is not answering - is it running on your computer?"); return; }
+  status("sending " + f.name + " …");
+  const data = await new Promise((ok, no) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result).split(",")[1] || "");
+    r.onerror = () => no(new Error("could not read that file"));
+    r.readAsDataURL(f);
+  });
+  const r = await fetch(desk.url + "/upload", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: f.name, data, code }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { status("The desk refused it: " + ((j.error && j.error.message) || r.status)); return; }
+  status("On the desk: " + j.name + ". Claude reads it with every question from here on.");
+  renderFiles(j.files || []);
+  toast("Uploaded " + j.name);
+}
+
+function renderFiles(files) {
+  const box = $("#fileList");
+  if (!box) return;
+  box.innerHTML = files.length
+    ? files.map(f => '<div class="filerow"><b>' + esc(f.name) + "</b> <span class=tiny>"
+        + (f.bytes / 1024).toFixed(0) + " KB</span></div>").join("")
+    : '<div class="empty">Nothing on the desk yet.</div>';
+}
+
+async function refreshFiles() {
+  const desk = await findDesk();
+  if (!desk || !desk.url) return;
   try {
-    status("reading " + f.name + "\u2026");
-    let text;
-    if (name.endsWith(".pdf")) text = await textFromPdf(f);
-    else if (name.endsWith(".docx")) text = await textFromDocx(f);
-    else if (name.endsWith(".doc")) throw new Error("old .doc files cannot be read in a browser - save it as .docx or PDF");
-    else text = await f.text();
-    text = text.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-    if (!text) throw new Error("nothing readable came out - if it is a scanned PDF the text is a picture, so it needs an export with real text");
-    resume = text; resumeBox.value = resume; LS.set("resume", resume); resumeCount();
-    status("Read " + f.name + " \u2014 " + text.length.toLocaleString() + " characters. It goes with every question from here on.");
-    toast("Loaded " + f.name);
-  } catch (err) {
-    status("Could not read " + f.name + ": " + (err && err.message ? err.message : err));
-  }
+    const r = await fetch(desk.url + "/files", { cache: "no-store" });
+    if (r.ok) renderFiles((await r.json()).files || []);
+  } catch { /* the desk is off; the empty list already says so */ }
 }
 
 $("#resumeFile").addEventListener("change", (e) => {
-  takeResumeFile(e.target.files && e.target.files[0]);
+  sendFile(e.target.files && e.target.files[0]);
   e.target.value = "";
 });
 const dropZone = $("#resumeDrop");
@@ -524,8 +506,10 @@ const dropZone = $("#resumeDrop");
 ["dragleave", "drop"].forEach(t => dropZone.addEventListener(t, () => dropZone.classList.remove("over")));
 dropZone.addEventListener("drop", (e) => {
   e.preventDefault();
-  takeResumeFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+  sendFile(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
 });
+refreshFiles();
+
 $("#resumeClear").addEventListener("click", () => { if (!resume || confirm("Clear the saved résumé text?")) { resume = ""; resumeBox.value = ""; LS.set("resume", ""); resumeCount(); status(""); } });
 
 /* ---------- applications ---------- */
