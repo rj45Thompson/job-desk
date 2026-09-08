@@ -791,10 +791,11 @@ class Desk(http.server.BaseHTTPRequestHandler):
         if "error" in req:
             return self._fail(req["error"], "bad_request", 400)
         kind = "local" if self._is_local() else f"tunnel {self._client_ip()}"
-        if not self.slots.acquire(timeout=20):
-            log(f"chat  {kind}  busy, refused")
-            return self._fail("The desk is busy with other answers. Try again in a moment.",
-                              "busy", 429)
+        # NO WAITING HERE. The slot is taken in the worker below, not in the request.
+        # Measured: with two answers already in flight this line held the POST for 13-21 seconds
+        # before it returned an id - so the one request that exists to be instant was the slowest
+        # thing in the app, and the chat felt "laggy" for a reason that had nothing to do with the
+        # model. A queued question is now accepted immediately and simply waits its turn.
         # The work runs in a thread and the request returns NOW. Cloudflare cuts a tunnelled
         # request at about 100 seconds - measured, error 524 at 125.4 s on "find me 2 jobs that
         # match my resume" - so an answer that searches the web can never come back on the
@@ -811,6 +812,11 @@ class Desk(http.server.BaseHTTPRequestHandler):
 
         def work():
             t0 = time.time()
+            # wait for a slot HERE, where waiting costs the answer time and not the request
+            if not self.slots.acquire(timeout=600):
+                job_put(jid, state="error", code="busy", status=429, at=time.time(),
+                        message="The desk stayed busy with other answers. Ask again.")
+                return
             try:
                 text = self.answer(SYSTEM, turn, self.cfg, who)
                 log(f"chat  {kind}  {asked} chars in, {len(text)} out, "
@@ -890,9 +896,19 @@ class Desk(http.server.BaseHTTPRequestHandler):
         except DeskError as e:
             log(f"signin  refused: {e.code}")
             return self._fail(e.message, e.code, e.status)
-        log(f"signin  {who['email']}")
+        # RJ: "during that make sure the cli is setup". Signing in and THEN discovering the
+        # desk's Claude is signed out is the worst order to find out in - the person has already
+        # handed over their identity and is typing a question. Check it here, while they are
+        # looking at a sign-in, and say which of the two is wrong.
+        auth = claude_auth(self.cfg)
+        self.state["auth"] = auth
+        log(f"signin  {who['email']}  cli={'ok' if auth.get('loggedIn') else 'SIGNED OUT'}")
         self._send({"ok": True, "user": who["email"], "name": who["name"],
-                    "project": user_slug(who["email"])})
+                    "project": user_slug(who["email"]),
+                    "cli": {"ready": bool(auth.get("loggedIn")),
+                            "message": "" if auth.get("loggedIn") else
+                                       "You are signed in, but the desk's own Claude is signed "
+                                       "out. On the desk computer run:  py desk.py login"}})
 
     def _project(self):
         """Save one login's applications and chat, so they follow the login rather than the browser."""

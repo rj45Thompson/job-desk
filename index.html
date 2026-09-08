@@ -472,7 +472,11 @@ function renderWho() {
     const gbtn = document.createElement("div");
     gbtn.id = "gbtn";
     w.appendChild(gbtn);
-    googleButton(gbtn);
+    /* When Google sign-in is configured it is the ONLY sign-in - RJ: "the sign in should be with
+       the actual google sign in, not just some random puppetshow", and he is right that a name you
+       type is theatre wearing a login's clothes. The typed box below is what you get when no
+       client id is set, so the demo still runs unconfigured; googleButton() removes it once
+       Google's button is actually on the page. */
     const i = document.createElement("input");
     i.placeholder = "sign in - any name"; i.setAttribute("aria-label", "Sign in");
     const go = document.createElement("button");
@@ -528,6 +532,8 @@ async function googleButton(host) {
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok || !j.user) { note((j.error && j.error.message) || "Google sign-in was refused.", true); return; }
+        // the desk told us whether its own Claude is ready; better here than mid-question
+        if (j.cli && !j.cli.ready) note(j.cli.message, true);
         user = j.user; LS.set("user", user);
         chat = []; LS.set("chat", chat); renderChat();
         renderWho(); gateOnSignIn(); refreshFiles(); projectLoad();
@@ -535,6 +541,11 @@ async function googleButton(host) {
     },
   });
   window.google.accounts.id.renderButton(host, { theme: "outline", size: "medium", text: "signin_with" });
+  // Google is configured, so the typed name stops being an option: a name anyone can type is not
+  // a sign-in, and leaving it beside a real one just invites people to use the weaker door.
+  host.parentElement.querySelectorAll("input, button").forEach(el => {
+    if (!host.contains(el)) el.remove();
+  });
 }
 
 let projectSaveT = null;
@@ -865,9 +876,17 @@ async function send(text) {
        already being written. */
     if (r.ok && j && j.id && !j.text) {
       const id = j.id, started = Date.now();
+      const tick = setInterval(() => {
+        const secs = Math.round((Date.now() - started) / 1000);
+        if (think && think.isConnected) think.textContent = "Thinking… " + secs + "s";
+      }, 1000);
+      try {
       while (Date.now() - started < 15 * 60 * 1000) {
         if (ctl && ctl.signal.aborted) throw Object.assign(new Error("stopped"), { name: "AbortError" });
-        await new Promise(w => setTimeout(w, 1800));
+        /* Poll quickly at first, then ease off. A flat 1800 ms meant a seven-second answer
+           could sit finished for nearly two seconds before the page noticed - lag we were adding
+           after the work was already done. */
+        await new Promise(w => setTimeout(w, Math.min(2000, 350 + (Date.now() - started) / 6)));
         let p;
         try { p = await fetch(desk.url + "/chat/" + encodeURIComponent(id), { cache: "no-store" }); }
         catch { continue; }                      // a blip on the tunnel: keep waiting, do not lose it
@@ -876,6 +895,7 @@ async function send(text) {
         j = pj; r = p;                            // done, or an error to fall into the branch below
         break;
       }
+      } finally { clearInterval(tick); }
     }
     think.remove();
     if (!r.ok || !j || typeof j.text !== "string") {
