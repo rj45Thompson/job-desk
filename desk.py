@@ -516,11 +516,32 @@ def ask_claude(system: str, user: str, cfg: dict, who=None) -> str:
     readable through the tunnel. That also meant a résumé had to be turned into
     text somewhere else, and the browser was the wrong place for it - Claude
     reads a PDF perfectly well on its own. So the blast radius is drawn instead
-    of closed: cwd and --add-dir are the uploads folder, and the allowed tools
-    are Read, Glob, Grep, WebSearch and WebFetch. It can read what you uploaded
+    of closed: cwd and --add-dir are the uploads folder, and the tools are
+    Read, Glob, Grep, WebSearch and WebFetch. It can read what you uploaded
     and it can browse; there is no Write, no Edit and no Bash, so it cannot
     change anything on this machine or run anything, and it cannot submit an
     application even if asked to.
+
+    THAT PARAGRAPH WAS FALSE FOR MONTHS AND THIS IS HOW. It rested on
+    --allowed-tools, which is an auto-APPROVE list - it says which tools skip a
+    permission prompt, not which tools exist. Asked to name its own tools, the
+    subprocess answered Agent, Artifact, Edit, Glob, Grep, ListAgents, Read,
+    ReportFindings, ScheduleWakeup, Skill, ToolSearch, Write. Worse, MCP servers
+    are not tools in that sense at all, so every connector authorised on the
+    owner's account came along: the desk told a visitor "The Gmail and Google
+    Drive connectors are already authorized on this account." Anyone who signed
+    in through the tunnel was talking to a Claude that could read RJ's mail.
+
+    Three flags close it, and all three are asserted by
+    test_the_fence_flags_are_all_present:
+      --tools              decides what EXISTS (this is the one that was missing)
+      --strict-mcp-config  loads no MCP servers at all, including ones added later
+      --restricted         ignores this machine's settings/CLAUDE.md/skills/hooks
+                           and confines file tools to cwd and --add-dir
+    Measured 2026-09-09 with all three set: exactly Glob, Grep, Read, WebFetch,
+    WebSearch, and "MCP: NONE". Re-run that against the live CLI after any
+    upgrade - the test proves we still ASK for the fence, not that the CLI still
+    honours it.
     """
     argv = resolve_cli(cfg)
     # the signed-in person's project, and nothing else: one person's files are not another's context
@@ -537,8 +558,39 @@ def ask_claude(system: str, user: str, cfg: dict, who=None) -> str:
     args = argv + ["-p", "--system-prompt-file", sys_file,
                    "--output-format", "json",
                    "--model", cfg.get("DESK_MODEL") or DEFAULTS["DESK_MODEL"],
+                   # --tools is the flag that decides what EXISTS; --allowed-tools only decides
+                   # what runs without a prompt. This file used to pass only the second one and
+                   # the docstring above claimed "there is no Write, no Edit and no Bash" on the
+                   # strength of it. MEASURED 2026-09-09 by asking the subprocess to list its own
+                   # tools: it answered Agent, Artifact, Edit, Glob, Grep, ListAgents, Read,
+                   # ReportFindings, ScheduleWakeup, Skill, ToolSearch, Write. Write and Edit were
+                   # there the whole time. An asserted fence that was never measured is worse than
+                   # no fence, because it is quoted in the docstring as if it held.
+                   # Naming them here also satisfies restricted mode's "unless --tools names
+                   # them" clause, which is what keeps WebSearch and WebFetch - the whole job-
+                   # matching feature - alive under --restricted.
+                   "--tools", ",".join(ALLOWED_TOOLS),
                    "--allowed-tools", ",".join(ALLOWED_TOOLS),
                    "--add-dir", str(neutral),
+                   # ── THE FENCE. RJ, 2026-09-09: "it's sending emails from my connector which is
+                   # only okay for me." He was right, and --allowed-tools was NOT the fence I had
+                   # assumed it was. MEASURED: a visitor asked the desk about applying and it
+                   # answered "The Gmail and Google Drive connectors are already authorized on
+                   # this account. They'd let me pull a file or look up whether you already
+                   # applied." Naming five built-in tools in an allowlist says nothing about MCP
+                   # servers, so every connector on the owner's account was reachable by anyone
+                   # who signed in through the tunnel - a stranger's question could read his mail.
+                   #
+                   # --strict-mcp-config with NO --mcp-config alongside it means the subprocess
+                   # loads zero MCP servers: not Gmail, not Drive, not anything added later. That
+                   # last clause is the point - the fence must hold for connectors that do not
+                   # exist yet, because the next one gets authorized without anyone revisiting
+                   # this file.
+                   #
+                   # --restricted additionally ignores user/project/local settings files, so the
+                   # desk stops inheriting this machine's CLAUDE.md, skills, plugins and hooks,
+                   # and confines the file tools to cwd and --add-dir.
+                   "--restricted", "--strict-mcp-config",
                    "--no-session-persistence"]
     timeout = float(cfg.get("CLAUDE_TIMEOUT") or DEFAULTS["CLAUDE_TIMEOUT"])
     try:

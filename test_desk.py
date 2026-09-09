@@ -42,8 +42,13 @@ model = args[args.index("--model") + 1]
 tools = args[args.index("--allowed-tools") + 1]
 adddir = args[args.index("--add-dir") + 1]
 print("noise line before the json")
+# ARGV is the WHOLE command line, not a summary of four flags picked out of it. Without it a test
+# about the desk's fence was reading this fake's formatting rather than the command that ran, and
+# a flag could be dropped from desk.py without a single test noticing - which is exactly what
+# happened to --tools. Anything asserting "the desk is closed" must read this field.
 print(json.dumps({"type": "result", "is_error": False,
-                  "result": f"ECHO[{user[-60:]}] SYS={len(system)} MODEL={model} TOOLS={tools!r} DIR={adddir!r}"}))
+                  "result": f"ECHO[{user[-60:]}] SYS={len(system)} MODEL={model} TOOLS={tools!r} "
+                            f"DIR={adddir!r} ARGV={' '.join(args)!r}"}))
 '''
 
 
@@ -171,10 +176,49 @@ class Runner(unittest.TestCase):
         """The desk is reachable through a tunnel, so the line between "can read the resume you
         uploaded" and "can touch this computer" is the whole of its safety. Asserted as a DENY
         list rather than by eyeballing the allow list, because the failure mode is a tool being
-        added later without anyone rethinking what that opens up."""
+        added later without anyone rethinking what that opens up.
+
+        ⚠ THIS TEST WAS GREEN WHILE THE PROPERTY WAS FALSE, 2026-09-09. It reads the ARGV, and
+        the argv never contained the word "Write" - so it passed, for months, while the running
+        subprocess really did have Write and Edit. The desk passed only --allowed-tools, which is
+        an auto-APPROVE list; --tools is the flag that decides what EXISTS. Asking the live
+        subprocess to name its own tools returned: Agent, Artifact, Edit, Glob, Grep, ListAgents,
+        Read, ReportFindings, ScheduleWakeup, Skill, ToolSearch, Write.
+        A test that inspects the command you meant to run, rather than the thing that ran, cannot
+        tell a fence from a comment. Kept because it is still a useful cheap guard, but the test
+        below is the one that encodes what was actually wrong."""
         text = desk.ask_claude("s", "q", self.cfg, "tester")
         for banned in ("Bash", "Write", "Edit", "NotebookEdit", "Task", "Agent"):
             self.assertNotIn(banned, text, f"{banned} must not be allowed through the tunnel")
+
+    def test_the_fence_flags_are_all_present(self):
+        """The three flags that actually close the desk, each earned by a measured failure.
+
+        --tools               decides what EXISTS. Without it the allowlist was decoration and
+                              Write/Edit were live (see the test above).
+        --strict-mcp-config   drops every MCP server. Without it the OWNER'S CONNECTORS were
+                              reachable by anyone who signed in: RJ's desk told a visitor "The
+                              Gmail and Google Drive connectors are already authorized on this
+                              account." A stranger's question could reach his mail.
+        --restricted          stops the subprocess inheriting this machine's settings, CLAUDE.md,
+                              skills, plugins and hooks, and confines file tools to --add-dir.
+
+        Verified live on 2026-09-09 by asking the subprocess to list its own tools with these
+        flags set; it answered exactly Glob, Grep, Read, WebFetch, WebSearch and "MCP: NONE".
+        Redo that measurement rather than trusting this test if the CLI's flags ever change -
+        this one only proves we still ASK for the fence, not that the CLI still honours it."""
+        text = desk.ask_claude("s", "q", self.cfg, "tester")
+        for flag in ("--tools", "--strict-mcp-config", "--restricted"):
+            self.assertIn(flag, text, f"{flag} is what keeps the desk closed; it must be passed")
+
+    def test_web_search_survives_restricted_mode(self):
+        """--restricted removes WebFetch "unless --tools names them", and scanning for job matches
+        is the entire product. So the fence and the feature are checked together: the first
+        attempt at this fix closed the desk AND silently removed WebSearch/WebFetch, which would
+        have shipped a safe desk that could no longer do its job."""
+        text = desk.ask_claude("s", "q", self.cfg, "tester")
+        for needed in ("WebSearch", "WebFetch"):
+            self.assertIn(needed, text, f"{needed} is how the desk finds jobs; --tools must name it")
 
     def test_claude_is_pointed_only_at_the_uploads_folder(self):
         text = desk.ask_claude("s", "q", self.cfg, "tester")
