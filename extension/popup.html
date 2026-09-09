@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Job Desk</title>
+<style>
+  :root{color-scheme:light}
+  body{margin:0;width:320px;font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:#f6f8fa;color:#16212c}
+  header{display:flex;gap:10px;align-items:center;padding:14px 16px;background:#fff;
+    border-bottom:1px solid #e3e9ef}
+  .mark{width:30px;height:30px;border-radius:8px;background:#1f5f9e;color:#fff;display:grid;
+    place-items:center;font-weight:700;font-size:13px}
+  main{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+  .row{display:flex;gap:8px;align-items:center;font-size:13px}
+  .dot{width:9px;height:9px;border-radius:50%;background:#c2ccd6;flex:none}
+  .dot.on{background:#2e9e5b} .dot.bad{background:#d0453b}
+  b{font-weight:600}
+  button{font:inherit;padding:8px 12px;border-radius:8px;border:1px solid #1f5f9e;background:#1f5f9e;
+    color:#fff;cursor:pointer}
+  button.ghost{background:#fff;color:#1f5f9e}
+  button:disabled{opacity:.55;cursor:default}
+  .muted{color:#5a6b7c;font-size:12px;line-height:1.45}
+  .err{color:#a3302a;font-size:12px}
+</style>
+<header>
+  <span class="mark">JD</span>
+  <div><b>Job Desk</b><div class="muted">answered from your own computer</div></div>
+</header>
+<main>
+  <div class="row"><span class="dot" id="dGoogle"></span><span id="tGoogle">checking Chrome…</span></div>
+  <div class="row"><span class="dot" id="dDesk"></span><span id="tDesk">looking for the desk…</span></div>
+  <button id="signin" disabled>Sign in</button>
+  <div class="err" id="err"></div>
+  <button id="open" class="ghost">Open the desk</button>
+  <div class="muted">Signs you in as the Google account this Chrome is signed into. Nothing to set
+    up and no password typed here.</div>
+</main>
+<script src="popup.js"></script>

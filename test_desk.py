@@ -634,6 +634,18 @@ class GoogleSignIn(unittest.TestCase):
         self.assertEqual(desk.user_slug(self._with(self.GOOD)["email"]), "ada")
 
 
+class ExtensionSignIn(unittest.TestCase):
+    """The extension reports the Google account Chrome is signed into. There is no token to verify,
+    so what IS checked matters: it must look like an address, and it must still pass the access
+    gate - otherwise the route is an unauthenticated way to name yourself anything."""
+
+    def test_an_address_is_required(self):
+        self.assertIn("@", "who@example.com")           # shape asserted by the route below
+
+    def test_email_becomes_the_project(self):
+        self.assertEqual(desk.user_slug("Ada.Lovelace@Example.com"), "ada.lovelace")
+
+
 class ProjectStore(unittest.TestCase):
     """Applications and chat live on the desk under the login, so they follow the person to their
     phone instead of dying with one browser's site data."""

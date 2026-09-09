@@ -772,6 +772,8 @@ class Desk(http.server.BaseHTTPRequestHandler):
             return self._project()
         if path == "/signin":
             return self._signin()
+        if path == "/signin-extension":
+            return self._signin_extension()
         if path != "/chat":
             return self._fail("Not found.", "not_found", 404)
         try:
@@ -876,6 +878,47 @@ class Desk(http.server.BaseHTTPRequestHandler):
         log(f"upload  {who}/{name}  {len(blob)} bytes")
         self._send({"ok": True, "name": name, "bytes": len(blob), "user": who,
                     "files": list_uploads(who)})
+
+    def _signin_extension(self):
+        """Sign in as the Google account CHROME is signed into, reported by the extension.
+
+        This is the sign-in RJ actually wanted - his real Google account - without an OAuth client
+        id, a Cloud project or a consent screen, none of which the desk can create for him. The
+        extension calls chrome.identity.getProfileUserInfo(), which is Chrome's own answer to
+        "whose browser is this".
+
+        WHAT IT IS AND IS NOT. There is no signed token here, so the desk is trusting the
+        extension's word for the address; anyone able to run code on this machine could post a
+        different one. That is a reasonable trade for an extension the owner installs on their own
+        computer to reach their own desk, and it is not one for a hosted product. /signin is the
+        stronger door and already exists: a real ID token, verified with Google in
+        google_identity(). This one is the demo's door, and it is deliberately a separate route so
+        that turning it off is deleting four lines rather than untangling a policy.
+        """
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 8192:
+            return self._fail("Bad sign-in.", "bad_request", 400)
+        try:
+            body = json.loads(self.rfile.read(n).decode("utf-8", "replace"))
+        except ValueError:
+            return self._fail("That was not JSON.", "bad_request", 400)
+        if not self._gate(body):
+            return
+        email = (body.get("email") or "").strip().lower()
+        if "@" not in email or len(email) > 254:
+            return self._fail("Chrome did not report a Google address. Sign into Chrome first.",
+                              "no_email", 400)
+        auth = claude_auth(self.cfg)
+        self.state["auth"] = auth
+        log(f"signin  {email}  (extension)  cli={'ok' if auth.get('loggedIn') else 'SIGNED OUT'}")
+        self._send({"ok": True, "user": email, "project": user_slug(email),
+                    "cli": {"ready": bool(auth.get("loggedIn")),
+                            "message": "" if auth.get("loggedIn") else
+                                       "You are signed in, but the desk's own Claude is signed "
+                                       "out. On the desk computer run:  py desk.py login"}})
 
     def _signin(self):
         """Turn a Google ID token into a signed-in login, after Google confirms it."""

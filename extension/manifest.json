@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Job Desk",
+  "version": "0.1.0",
+  "description": "Signs you in with your own Google account and talks to the Job Desk running on your computer.",
+  "permissions": ["identity", "identity.email", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://*.trycloudflare.com/*",
+    "https://rj45thompson.github.io/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Job Desk" }
+}
