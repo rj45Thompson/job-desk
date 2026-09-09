@@ -6,6 +6,7 @@ a fake CLI stands in, so what is tested is the desk's own behaviour.
 """
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -762,5 +763,79 @@ class TunnelRoutes(unittest.TestCase):
         self.assertGreaterEqual(desk.TUNNEL_CHECK_SEC, 15)
 
 
+
+class ApiBackend(unittest.TestCase):
+    """The hosted path. RJ: "lets move it from my box to the proper hosting and I'll give it the
+    claude key." The desk answers through the Anthropic API when a key is configured, and through
+    the logged-in CLI when one is not - so a laptop with nothing configured still works."""
+
+    def setUp(self):
+        self.cfg = cfg_with()
+        self.tmp = tempfile.mkdtemp()
+        self._root = desk.ROOT
+        desk.ROOT = Path(self.tmp)
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    def tearDown(self):
+        desk.ROOT = self._root
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_key_routes_to_the_api_and_no_key_routes_to_the_cli(self):
+        """The switch is the presence of a key, not a mode flag - a flag can disagree with reality
+        and then fails at the first question instead of at start-up."""
+        seen = []
+        real = desk.ask_claude_api
+        desk.ask_claude_api = lambda s, u, c, w=None: seen.append("api") or "API ANSWER"
+        try:
+            self.assertEqual(desk.ask_claude("s", "q", dict(self.cfg, ANTHROPIC_API_KEY="sk-x"),
+                                             "tester"), "API ANSWER")
+            self.assertEqual(seen, ["api"])
+            out = desk.ask_claude("s", "q", self.cfg, "tester")     # no key -> the CLI fake
+            self.assertIn("ECHO[q]", out)
+            self.assertEqual(seen, ["api"], "no key must not reach the API backend")
+        finally:
+            desk.ask_claude_api = real
+
+    def test_only_the_signed_in_persons_files_are_attached(self):
+        """One person's résumé is not another's context. On the CLI path that came from --add-dir;
+        on the API path it is a property of which bytes we choose to send, so it needs its own
+        test rather than inheriting the old one's assurance."""
+        (desk.uploads_dir("alice") / "alice-cv.txt").write_text("ALICE RESUME", encoding="utf-8")
+        (desk.uploads_dir("bob") / "bob-cv.txt").write_text("BOB RESUME", encoding="utf-8")
+        blob = json.dumps(desk._attachments("alice"))
+        self.assertIn("ALICE RESUME", blob)
+        self.assertNotIn("BOB RESUME", blob)
+        self.assertNotIn("bob-cv.txt", blob)
+
+    def test_a_file_that_could_not_be_sent_is_named_not_dropped(self):
+        """A résumé that never reached the model, with the model answering anyway, is the exact
+        shape of an answer that reads as informed and is not. Unsendable files are announced."""
+        (desk.uploads_dir("alice") / "portfolio.docx").write_bytes(b"PK\x03\x04 not a pdf")
+        blob = json.dumps(desk._attachments("alice"))
+        self.assertIn("portfolio.docx", blob)
+        self.assertIn("NOT sent", blob)
+
+    def test_nobody_signed_in_attaches_nothing(self):
+        self.assertEqual(desk._attachments(None), [])
+
+    def test_the_api_path_declares_no_tool_that_can_change_anything(self):
+        """The whole argument for hosting: the API inherits no account, no settings and no MCP
+        servers, so the capability list IS the request. Assert it names only the two read-only
+        server tools - if a future edit adds bash or code execution here, that is a new blast
+        radius and it should have to argue for itself in a diff."""
+        names = {t["name"] for t in desk.SERVER_TOOLS}
+        self.assertEqual(names, {"web_search", "web_fetch"})
+        for t in desk.SERVER_TOOLS:
+            self.assertNotIn("code_execution", t["type"])
+            self.assertNotIn("bash", t["type"])
+
+    def test_no_key_anywhere_is_a_named_failure_not_a_crash(self):
+        with self.assertRaises(desk.DeskError) as cm:
+            desk.ask_claude_api("s", "q", dict(self.cfg, ANTHROPIC_API_KEY=""), "tester")
+        self.assertEqual(cm.exception.code, "signed_out")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+

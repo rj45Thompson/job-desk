@@ -77,6 +77,14 @@ DEFAULTS = {
     # Empty means no Google button and the typed-name sign-in, so the demo works unconfigured.
     "GOOGLE_CLIENT_ID": "",
     "GITHUB_TOKEN": "",
+    # An Anthropic API key turns this desk into a HOSTED desk: answers come from the API instead
+    # of a logged-in CLI, so the process inherits no account, no settings and no connectors. Set
+    # it and the API backend is used; leave it empty and the CLI backend runs as before, which is
+    # what keeps `py desk.py` working on a laptop with nothing configured.
+    # It is a SECRET. Put it in .env or the host's environment; never in desk.json, which the page
+    # publishes.
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_MODEL": "",
 }
 
 # ─────────────────────────── settings ────────────────────────────
@@ -487,18 +495,165 @@ def user_slug(raw) -> str:
     return name[:48]
 
 
+def uploads_base() -> Path:
+    """Where every project folder lives.
+
+    DESK_UPLOADS exists for hosting. A container's filesystem is discarded on every deploy, so a
+    hosted desk must put this on a mounted volume or it silently loses somebody's résumé - and a
+    résumé that vanished without a word is worse than a desk that refused to start. Unset (the
+    laptop case) it stays ./uploads next to desk.py, exactly as before.
+    """
+    return Path(os.environ.get("DESK_UPLOADS") or (ROOT / "uploads"))
+
+
 def uploads_dir(user=None) -> Path:
     """That person's project folder - the ONLY folder Claude is pointed at for their questions."""
     who = user_slug(user)
     if not who:
         raise DeskError("sign_in", "Sign in first.", 403)
-    d = ROOT / "uploads" / who
+    d = uploads_base() / who
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
+# ────────────────────── the API backend (for hosting) ──────────────────────
+# RJ, 2026-09-09: "lets move it from my box to the proper hosting and I'll give it the claude key."
+#
+# WHY THIS EXISTS AND WHY IT IS NOT JUST A TRANSPORT SWAP. The CLI backend below is one person's
+# logged-in Claude running on one person's computer, and that is exactly what made the connector
+# leak possible: it inherits an account, its settings, its skills and its MCP servers, so closing
+# it took three flags and a measurement, and it will take another look every time the CLI adds a
+# surface. The API inherits NOTHING. There is no account, no settings file, no CLAUDE.md, no
+# plugin, no MCP server - the request carries the entire capability list and nothing else exists.
+# The bug class we just fixed cannot occur on this path, which is the real argument for hosting,
+# over and above the fact that a laptop behind a quick tunnel is not a product.
+#
+# WHAT THE CLI GAVE US FOR FREE AND HOW EACH IS REPLACED
+#   Read/Glob/Grep over uploads  ->  the résumé is ATTACHED as a document content block. Better:
+#                                    the model no longer needs a filesystem to read a PDF, so the
+#                                    hosted desk needs no writable disk for Claude at all.
+#   WebSearch / WebFetch         ->  the server-side tools of the same name. They run on
+#                                    Anthropic's infrastructure, so there is no browser and no
+#                                    egress from the container to secure.
+# There is still no Write, no Edit and no Bash, because they are simply not declared. That is the
+# difference between a fence you build and a fence you inherit.
+ANTHROPIC_MODEL = "claude-opus-5"
+# Server tools do the reading and searching. `web_fetch` only fetches URLs already in the
+# conversation, so it cannot wander; both are scoped to job boards below rather than the open web.
+SERVER_TOOLS = [
+    {"type": "web_search_20260209", "name": "web_search", "max_uses": 12},
+    {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 12},
+]
+# Documents Claude can be handed directly. Anything else stays on disk and is simply not sent -
+# silently attaching an unknown binary as a PDF is the kind of guess that produces a confident
+# wrong answer about somebody's CV.
+DOC_TYPES = {".pdf": "application/pdf"}
+TEXT_TYPES = {".txt", ".md", ".markdown", ".rst"}
+MAX_DOC_BYTES = 24 * 1024 * 1024          # the API's request ceiling is 32 MB; leave room for text
+
+
+def _attachments(who) -> list:
+    """The signed-in person's uploads, as content blocks. Their files and nobody else's.
+
+    uploads_dir() raises unless somebody is signed in, so the isolation that the CLI path got
+    from --add-dir is here a property of which bytes we choose to send.
+    """
+    blocks, skipped = [], []
+    try:
+        paths = sorted(p for p in uploads_dir(who).iterdir()
+                       if p.is_file() and p.name != PROJECT_FILE)
+    except (OSError, DeskError):
+        return []
+    for p in paths:
+        ext = p.suffix.lower()
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        if size > MAX_DOC_BYTES:
+            skipped.append(f"{p.name} ({size // 1048576} MB, too large to send)")
+            continue
+        try:
+            if ext in DOC_TYPES:
+                data = base64.standard_b64encode(p.read_bytes()).decode("ascii")
+                blocks.append({"type": "document", "title": p.name,
+                               "source": {"type": "base64", "media_type": DOC_TYPES[ext],
+                                          "data": data}})
+            elif ext in TEXT_TYPES:
+                blocks.append({"type": "document", "title": p.name,
+                               "source": {"type": "text", "media_type": "text/plain",
+                                          "data": p.read_text(encoding="utf-8", errors="replace")}})
+            else:
+                skipped.append(f"{p.name} (not a PDF or text file)")
+        except OSError as e:
+            skipped.append(f"{p.name} (unreadable: {e})")
+    # NOT a silent drop. A résumé that never reached the model, with the model then answering
+    # anyway, is the exact shape of an answer that reads as informed and is not.
+    if skipped:
+        blocks.append({"type": "text",
+                       "text": "Files on this desk that were NOT sent to you, so do not claim to "
+                               "have read them: " + "; ".join(skipped)})
+    return blocks
+
+
+def ask_claude_api(system: str, user: str, cfg: dict, who=None) -> str:
+    """Answer through the Anthropic API. No account, no settings, no connectors - by construction.
+
+    Streaming because a real job search runs minutes and 128K-capable models need it to stay under
+    the HTTP timeout; the SDK's get_final_message() reassembles it.
+    """
+    try:
+        import anthropic                                    # lazy: the CLI path stays stdlib-only
+    except ImportError:
+        raise DeskError("no_sdk", "This desk is configured for the API but the `anthropic` "
+                                  "package is not installed (pip install anthropic).", 503)
+    key = cfg.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or ""
+    if not key:
+        raise DeskError("signed_out", "This desk has no Anthropic API key configured.", 503)
+
+    content = _attachments(who) + [{"type": "text", "text": user}]
+    client = anthropic.Anthropic(api_key=key,
+                                 timeout=float(cfg.get("CLAUDE_TIMEOUT")
+                                               or DEFAULTS["CLAUDE_TIMEOUT"]))
+    try:
+        with client.messages.stream(
+            model=cfg.get("ANTHROPIC_MODEL") or ANTHROPIC_MODEL,
+            max_tokens=32000,
+            system=system,
+            thinking={"type": "adaptive"},
+            tools=SERVER_TOOLS,
+            messages=[{"role": "user", "content": content}],
+        ) as stream:
+            msg = stream.get_final_message()
+    except anthropic.AuthenticationError:
+        raise DeskError("signed_out", "The desk's Anthropic API key was rejected.", 503)
+    except anthropic.RateLimitError:
+        raise DeskError("busy", "The desk is rate-limited right now. Try again shortly.", 429)
+    except anthropic.APIStatusError as e:
+        raise DeskError("upstream", f"Anthropic returned {e.status_code}.", 502)
+    except anthropic.APIConnectionError:
+        raise DeskError("upstream", "The desk could not reach Anthropic.", 502)
+
+    # A refusal is an ANSWER, not an exception, and it arrives with HTTP 200 - checking
+    # stop_reason before reading content is the difference between reporting it and printing "".
+    if msg.stop_reason == "refusal":
+        why = getattr(msg.stop_details, "explanation", "") or ""
+        raise DeskError("refused", ("Claude declined to answer that. " + why).strip(), 200)
+    text = "".join(b.text for b in msg.content if b.type == "text").strip()
+    if not text:
+        raise DeskError("empty", "Claude returned no text for that question.", 502)
+    return text
+
+
 def ask_claude(system: str, user: str, cfg: dict, who=None) -> str:
     """
+    One question to Claude, and its answer back. An API key routes to the API backend above
+    (hosted); without one this is the signed-in Claude Code CLI (this laptop).
+
+    The switch is presence of a key rather than a mode flag, because a mode flag can disagree with
+    reality - a desk set to "api" with no key would fail at the first question instead of at
+    start-up, and one set to "cli" on a host with no CLI would do the same in the other direction.
+
     One question to the signed-in Claude Code CLI, and its answer back.
 
     Three things that each broke once, kept in one place:
@@ -543,6 +698,9 @@ def ask_claude(system: str, user: str, cfg: dict, who=None) -> str:
     upgrade - the test proves we still ASK for the fence, not that the CLI still
     honours it.
     """
+    if cfg.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
+        return ask_claude_api(system, user, cfg, who)
+
     argv = resolve_cli(cfg)
     # the signed-in person's project, and nothing else: one person's files are not another's context
     neutral = uploads_dir(who)
