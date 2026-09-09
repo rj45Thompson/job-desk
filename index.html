@@ -510,7 +510,7 @@ function renderWho() {
    anyone can post any JSON to /signin over the tunnel. The email Google returns becomes the
    project, so everything already keyed on a login keeps working untouched. */
 let googleReady = null;
-async function googleButton(host) {
+async function googleButton(host, onRendered) {
   const ok = await findDesk();
   if (!ok || !desk.url) return;
   let cid = "";
@@ -541,18 +541,14 @@ async function googleButton(host) {
         if (!r.ok || !j.user) { note((j.error && j.error.message) || "Google sign-in was refused.", true); return; }
         // the desk told us whether its own Claude is ready; better here than mid-question
         if (j.cli && !j.cli.ready) note(j.cli.message, true);
-        user = j.user; LS.set("user", user);
-        chat = []; LS.set("chat", chat); renderChat();
-        renderWho(); gateOnSignIn(); refreshFiles(); projectLoad();
+        signedInAs(j.user);      // one sign-in path, so it cannot drift from the typed one
       } catch (e) { note("Could not finish the Google sign-in (" + (e.message || e) + ").", true); }
     },
   });
-  window.google.accounts.id.renderButton(host, { theme: "outline", size: "medium", text: "signin_with" });
+  window.google.accounts.id.renderButton(host, { theme: "outline", size: "large", text: "signin_with" });
   // Google is configured, so the typed name stops being an option: a name anyone can type is not
-  // a sign-in, and leaving it beside a real one just invites people to use the weaker door.
-  host.parentElement.querySelectorAll("input, button").forEach(el => {
-    if (!host.contains(el)) el.remove();
-  });
+  // a sign-in, and leaving a weaker door beside a real one only invites its use.
+  if (onRendered) onRendered();
 }
 
 let projectSaveT = null;
@@ -586,18 +582,50 @@ function projectSave() {
    in the same folder as the owner's résumé, so there isn't one: signing in is what CREATES a
    project, and until then there is nothing to read and nothing to write. */
 function gateOnSignIn() {
-  document.body.dataset.signedIn = user ? "1" : "";
-  const box = $("#input"), send = $("#send");
-  if (box) {
-    box.disabled = !user;
-    box.placeholder = user ? "Ask, or say what to draft… (Enter sends, Shift+Enter for a new line)"
-                           : "Sign in above to start - your files stay yours";
-  }
-  if (send) send.disabled = !user;
-  const drop = $("#resumeDrop");
-  if (drop) drop.style.opacity = user ? "" : ".45";
-  const fi = $("#resumeFile");
-  if (fi) fi.disabled = !user;
+  /* SIGNED OUT, THE APP IS NOT ON THE PAGE. RJ: "when signed out I still see everything ... when
+     signed out I can't do anything until I sign in ... the sign in button never reappeared either."
+
+     Three bugs, one cause: the earlier version of this function only DISABLED the ask box, and it
+     set the flag with `document.body.dataset.signedIn = user ? "1" : ""`. An empty string still
+     CREATES the attribute, so `body:not([data-signed-in])` never matched and the CSS that hides
+     the app never applied - the whole desk stayed on screen while nobody was signed in. And
+     because nothing ever un-hid #gate or built its controls, there was no way back in either.
+     Remove the attribute, do not blank it. */
+  if (user) document.body.setAttribute("data-signed-in", "1");
+  else document.body.removeAttribute("data-signed-in");
+  const gate = $("#gate");
+  if (gate) gate.hidden = !!user;
+  if (!user) signInControls();
+}
+
+/* The sign-in on the gate. Google's button when the desk has a client id; a typed name only when
+   it does not, so an unconfigured demo still runs. Rebuilt every time the gate appears, because
+   "sign out then sign back in" has to work and a build-once guard is exactly what stopped it. */
+function signInControls() {
+  const googleHost = $("#gateGoogle"), nameHost = $("#gateName");
+  if (!googleHost || !nameHost) return;
+  nameHost.innerHTML = "";
+  const i = document.createElement("input");
+  i.placeholder = "your name or email";
+  i.setAttribute("aria-label", "Sign in");
+  const go = document.createElement("button");
+  go.className = "btn"; go.textContent = "Sign in";
+  const signIn = () => {
+    const v = i.value.trim();
+    if (!v) { i.focus(); return; }
+    signedInAs(v);
+  };
+  go.addEventListener("click", signIn);
+  i.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); signIn(); } });
+  nameHost.append(i, go);
+  setTimeout(() => i.focus(), 30);
+  googleButton(googleHost, () => { nameHost.innerHTML = ""; });
+}
+
+function signedInAs(v) {
+  user = v; LS.set("user", user);
+  chat = []; LS.set("chat", chat); renderChat();
+  renderWho(); gateOnSignIn(); refreshFiles(); projectLoad();
 }
 
 renderWho();
