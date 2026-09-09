@@ -130,31 +130,37 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
 .welcome b{color:var(--ink)}
 .chat-only{display:none}
 
+/* These are TOP-LEVEL rules and it matters. They were all sitting inside the
+   @media (max-width:900px) block below, because each was inserted by anchoring on a selector
+   that happens to live in there - so the drop zone, the sign-in gate and the rules that hide the
+   app while signed out existed ONLY on a narrow window. On a desktop the gate did not cover
+   anything and the whole desk stayed visible behind it, which is exactly what RJ was seeing. */
+.drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+  padding:26px 16px;border:2px dashed var(--line,#c8d2dd);border-radius:10px;cursor:pointer;
+  text-align:center;background:rgba(127,160,200,.05);transition:border-color .15s,background .15s}
+.drop:hover,.drop.over{border-color:var(--accent,#1f5f9e);background:rgba(31,95,158,.09)}
+.drop strong{font-size:15px}
+.who{margin-right:auto;display:flex;align-items:center;gap:8px;font-size:13px}
+.gate{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;
+  background:var(--bg,#f6f8fa);padding:24px}
+.gatecard{max-width:430px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px}
+.gatecard h1{margin:0;font-size:26px}
+.gatecard p{margin:0;color:var(--muted,#5a6b7c);line-height:1.55}
+.gatename{display:flex;gap:8px;align-items:center}
+.gatename input{padding:8px 10px;border:1px solid var(--line,#cfd8e3);border-radius:8px;font:inherit;width:220px}
+body:not([data-signed-in]) .top,
+body:not([data-signed-in]) .tabs,
+body:not([data-signed-in]) .shell,
+body:not([data-signed-in]) .codebar{display:none}
+.who input{width:190px;padding:5px 8px;border:1px solid var(--line,#cfd8e3);border-radius:7px;font:inherit}
+.who b{font-weight:600}
+.filelist{margin:10px 0 4px}
+.filerow{padding:7px 10px;border:1px solid var(--line,#dde3ea);border-radius:8px;margin-bottom:6px}
+
 @media (max-width:900px){
   .shell{grid-template-columns:1fr}
   .side{border-right:0;border-bottom:1px solid var(--line)}
   .chat-only{display:inline-block}
-  .drop{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
-    padding:26px 16px;border:2px dashed var(--line,#c8d2dd);border-radius:10px;cursor:pointer;
-    text-align:center;background:rgba(127,160,200,.05);transition:border-color .15s,background .15s}
-  .drop:hover,.drop.over{border-color:var(--accent,#1f5f9e);background:rgba(31,95,158,.09)}
-  .drop strong{font-size:15px}
-  .who{margin-right:auto;display:flex;align-items:center;gap:8px;font-size:13px}
-  .gate{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;
-    background:var(--bg,#f6f8fa);padding:24px}
-  .gatecard{max-width:430px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px}
-  .gatecard h1{margin:0;font-size:26px}
-  .gatecard p{margin:0;color:var(--muted,#5a6b7c);line-height:1.55}
-  .gatename{display:flex;gap:8px;align-items:center}
-  .gatename input{padding:8px 10px;border:1px solid var(--line,#cfd8e3);border-radius:8px;font:inherit;width:220px}
-  body:not([data-signed-in]) .top,
-  body:not([data-signed-in]) .tabs,
-  body:not([data-signed-in]) .shell,
-  body:not([data-signed-in]) .codebar{display:none}
-  .who input{width:190px;padding:5px 8px;border:1px solid var(--line,#cfd8e3);border-radius:7px;font:inherit}
-  .who b{font-weight:600}
-  .filelist{margin:10px 0 4px}
-  .filerow{padding:7px 10px;border:1px solid var(--line,#dde3ea);border-radius:8px;margin-bottom:6px}
   body[data-tab="chat"] .side{display:none}
   body:not([data-tab="chat"]) .chatpane{display:none}
   .grid2{grid-template-columns:1fr}
@@ -602,23 +608,24 @@ function gateOnSignIn() {
    it does not, so an unconfigured demo still runs. Rebuilt every time the gate appears, because
    "sign out then sign back in" has to work and a build-once guard is exactly what stopped it. */
 function signInControls() {
+  /* GOOGLE ONLY. RJ: "when I press sign in we only allow google sign in." A name anyone can type
+     is not a sign-in, and while it sat next to a real one it was the door people used.
+
+     Two ways in, and both are the same Google account:
+       * the EXTENSION signs the page in by itself (extension/content.js) - it already knows who
+         this Chrome is, so there is nothing to press;
+       * Google's own button, if the desk has a GOOGLE_CLIENT_ID.
+     With neither, there is nothing to type: the gate says how to get one rather than offering a
+     weaker door that would then be the only door anyone used. */
   const googleHost = $("#gateGoogle"), nameHost = $("#gateName");
   if (!googleHost || !nameHost) return;
   nameHost.innerHTML = "";
-  const i = document.createElement("input");
-  i.placeholder = "your name or email";
-  i.setAttribute("aria-label", "Sign in");
-  const go = document.createElement("button");
-  go.className = "btn"; go.textContent = "Sign in";
-  const signIn = () => {
-    const v = i.value.trim();
-    if (!v) { i.focus(); return; }
-    signedInAs(v);
-  };
-  go.addEventListener("click", signIn);
-  i.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); signIn(); } });
-  nameHost.append(i, go);
-  setTimeout(() => i.focus(), 30);
+  const hint = document.createElement("p");
+  hint.className = "muted";
+  hint.innerHTML = "Waiting for the Job Desk extension… it signs you in as the Google account "
+    + "this Chrome is already using. Not installed? <b>chrome://extensions</b> → Developer "
+    + "mode → Load unpacked → <code>job-desk/extension</code>.";
+  nameHost.appendChild(hint);
   googleButton(googleHost, () => { nameHost.innerHTML = ""; });
 }
 
@@ -627,6 +634,15 @@ function signedInAs(v) {
   chat = []; LS.set("chat", chat); renderChat();
   renderWho(); gateOnSignIn(); refreshFiles(); projectLoad();
 }
+
+/* The extension signs the page in as this Chrome's Google account and fires this. It also
+   writes localStorage, so a page loaded before the extension woke up picks it up next time. */
+addEventListener("jobdesk:signedin", (e) => {
+  const who = e && e.detail && e.detail.user;
+  if (!who || user) return;
+  signedInAs(who);
+  if (e.detail.cli && !e.detail.cli.ready) note(e.detail.cli.message, true);
+});
 
 renderWho();
 gateOnSignIn();
