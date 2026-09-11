@@ -156,6 +156,18 @@ body:not([data-signed-in]) .codebar{display:none}
 .who b{font-weight:600}
 .filelist{margin:10px 0 4px}
 .filerow{padding:7px 10px;border:1px solid var(--line,#dde3ea);border-radius:8px;margin-bottom:6px}
+.rv-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:2px}
+.rv-head b{font-size:16px}
+.rv-warn{display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:8px;margin:10px 0 14px;
+  background:rgba(214,150,40,.13);border:1px solid rgba(214,150,40,.45);font-size:13px}
+.rv-sec{margin:14px 0}
+.rv-sec h3{margin:0 0 5px;font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--soft,#5a6b7c)}
+.rv-sec textarea{width:100%;min-height:130px;font:13px/1.55 var(--mono,ui-monospace),Consolas,monospace;
+  padding:10px;border:1px solid var(--line,#dde3ea);border-radius:8px;background:var(--card,#fff);
+  color:inherit;resize:vertical}
+.rv-missing{padding:10px 12px;border:1px dashed var(--line,#cfd8e3);border-radius:8px;
+  color:var(--soft,#5a6b7c);font-size:13px}
+.rv-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
 
 @media (max-width:900px){
   .shell{grid-template-columns:1fr}
@@ -210,6 +222,7 @@ body:not([data-signed-in]) .codebar{display:none}
   <button class="tab chat-only active" data-tab="chat">Chat</button>
   <button class="tab" data-tab="resume">Résumé</button>
   <button class="tab" data-tab="apps">Applications <span class="count" id="appCount">0</span></button>
+  <button class="tab" data-tab="review">Review <span class="count" id="reviewCount">0</span></button>
 </nav>
 
 <main class="shell">
@@ -232,6 +245,13 @@ body:not([data-signed-in]) .codebar{display:none}
         <span class="hint" id="resumeCount"></span>
         <button class="tiny" id="resumeClear">Clear</button>
       </div>
+    </div>
+
+    <div class="panel" data-panel="review" hidden>
+      <h2>Review before submit</h2>
+      <p class="lede">The whole application, as it would go out. Nothing here is sent by the desk -
+        it cannot send anything. You read it, you copy it, you press submit on their site.</p>
+      <div id="reviewBody"></div>
     </div>
 
     <div class="panel" data-panel="apps" hidden>
@@ -737,6 +757,95 @@ $("#resumeClear").addEventListener("click", () => { if (!resume || confirm("Clea
 
 /* ---------- applications ---------- */
 function currentApp() { return apps.find(a => a.id === selectedApp) || null; }
+
+/* ---------- review before submit ----------
+   RJ: "it should preview the application it's going to submit before it does it, that's it."
+   So this shows the whole thing as it would go out and STOPS. The desk cannot submit - it runs
+   with Read/Glob/Grep/WebSearch/WebFetch and no Bash, no browser automation - and that is a
+   property of the build rather than a setting, which is why the banner can say so flatly. */
+function reviewReady(a) { return !!(a && (a.letter || a.tailored)); }
+
+function renderReview() {
+  const host = $("#reviewBody"); if (!host) return;
+  $("#reviewCount").textContent = apps.filter(reviewReady).length;
+  const a = currentApp();
+  host.innerHTML = "";
+  if (!a) {
+    host.innerHTML = '<div class="rv-missing">No application selected. Pick one on the '
+      + '<b>Applications</b> tab, then ask the chat to draft the letter and tailor the résumé - '
+      + 'paste each answer into the matching box below.</div>';
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "rv-head";
+  head.innerHTML = "<b>" + esc(a.role || "[role]") + "</b> at <b>" + esc(a.company || "[company]") + "</b>"
+    + (a.status ? ' <span class="tag">' + esc(a.status) + "</span>" : "");
+  host.appendChild(head);
+  if (a.link) {
+    const l = document.createElement("div");
+    l.className = "small";
+    l.innerHTML = '<a href="' + esc(a.link) + '" target="_blank" rel="noopener">' + esc(a.link) + "</a>";
+    host.appendChild(l);
+  }
+  const warn = document.createElement("div");
+  warn.className = "rv-warn";
+  warn.innerHTML = a.status === "Applied"
+    ? "<b>Marked as sent.</b> You told the desk you submitted this on " + esc(a.date || "an unrecorded date") + "."
+    : "<b>Not sent.</b> The desk cannot submit anything - no browser automation, no email. Copy what you want, submit it on their site, then mark it below.";
+  host.appendChild(warn);
+
+  const sec = (title, key, placeholder) => {
+    const d = document.createElement("div");
+    d.className = "rv-sec";
+    const h = document.createElement("h3"); h.textContent = title; d.appendChild(h);
+    const t = document.createElement("textarea");
+    t.value = a[key] || ""; t.placeholder = placeholder;
+    t.addEventListener("input", () => { a[key] = t.value; LS.set("apps", apps); projectSave(); renderReview_count(); });
+    d.appendChild(t);
+    const row = document.createElement("div"); row.className = "rv-actions";
+    const copy = document.createElement("button");
+    copy.className = "tiny"; copy.textContent = "Copy";
+    copy.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(t.value); copy.textContent = "Copied";
+            setTimeout(() => copy.textContent = "Copy", 1200); } catch {}
+    });
+    row.appendChild(copy);
+    d.appendChild(row);
+    host.appendChild(d);
+  };
+  sec("Cover letter", "letter", "Ask the chat: \"write the cover letter for this\" - then paste it in here.");
+  sec("Tailored résumé", "tailored", "Ask the chat: \"tailor my résumé for this posting\" - then paste it in here.");
+
+  if (a.posting) {
+    const d = document.createElement("div");
+    d.className = "rv-sec";
+    d.innerHTML = "<h3>The posting this was written against</h3>";
+    const p = document.createElement("div");
+    p.className = "rv-missing";
+    p.textContent = a.posting.slice(0, 420) + (a.posting.length > 420 ? "…" : "");
+    d.appendChild(p); host.appendChild(d);
+  }
+
+  const act = document.createElement("div");
+  act.className = "rv-actions";
+  if (a.link) {
+    const open = document.createElement("a");
+    open.className = "btn"; open.href = a.link; open.target = "_blank"; open.rel = "noopener";
+    open.textContent = "Open the posting →";
+    act.appendChild(open);
+  }
+  const mark = document.createElement("button");
+  mark.className = "btn ghost";
+  mark.textContent = a.status === "Applied" ? "Not sent after all" : "I submitted this";
+  mark.addEventListener("click", () => {
+    a.status = a.status === "Applied" ? "Saved" : "Applied";
+    if (a.status === "Applied" && !a.date) a.date = new Date().toISOString().slice(0, 10);
+    LS.set("apps", apps); projectSave(); renderApps(); renderReview();
+  });
+  act.appendChild(mark);
+  host.appendChild(act);
+}
+function renderReview_count() { $("#reviewCount").textContent = apps.filter(reviewReady).length; }
 function renderApps() {
   const list = $("#appList");
   list.innerHTML = "";
