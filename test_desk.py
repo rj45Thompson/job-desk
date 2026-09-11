@@ -429,6 +429,34 @@ class Server(unittest.TestCase):
             time.sleep(0.1)
         raise AssertionError("the desk never finished the answer")
 
+    def test_extension_signin_is_refused_through_the_tunnel(self):
+        """THE HOLE THIS CLOSES, proven against the live desk on 2026-09-11.
+
+        /signin-extension trusts the caller's word for the email - there is no token to verify -
+        and the only thing in front of it was _gate(), which checks the desk's access code. But
+        that code is PUBLISHED in desk.json so the page can supply it without anyone typing one.
+        Scraping the public code and posting an address nobody owns returned ok:true; substitute
+        the owner's address and any visitor is signed in as him, holding his uploads folder and
+        the resume in it. A public code authenticates nobody.
+
+        The old test here asserted `"@" in "who@example.com"` - it touched no desk code at all,
+        while its own docstring said the route "must still pass the access gate - otherwise it is
+        an unauthenticated way to name yourself anything." It named the bug and did not look for
+        it."""
+        st, body, _ = self.call("POST", "/signin-extension",
+                                {"email": "stranger@example.com", "code": "open-sesame"},
+                                headers={"CF-Connecting-IP": "203.0.113.9"})
+        self.assertEqual(st, 403, "a tunnel visitor must not be able to name themselves")
+        self.assertEqual((body or {}).get("error", {}).get("code"), "signin_local_only")
+
+    def test_extension_signin_still_works_on_this_computer(self):
+        """The fence must not lock the owner out: the extension reaches the desk on 127.0.0.1,
+        which is the only case the route was ever justified for."""
+        st, body, _ = self.call("POST", "/signin-extension",
+                                {"email": "Owner@Example.com", "code": "open-sesame"})
+        self.assertEqual(st, 200)
+        self.assertEqual(body.get("user"), "owner@example.com")
+
     def test_an_answer_is_collected_not_waited_for(self):
         st, j, _ = self.call("POST", "/chat", {"messages": [{"role": "user", "content": "hi"}], "user": "tester"})
         self.assertEqual(st, 202, "POST must hand back an id immediately, not hold the request")

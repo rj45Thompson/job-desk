@@ -1104,7 +1104,34 @@ class Desk(http.server.BaseHTTPRequestHandler):
         stronger door and already exists: a real ID token, verified with Google in
         google_identity(). This one is the demo's door, and it is deliberately a separate route so
         that turning it off is deleting four lines rather than untangling a policy.
+
+        THOSE FOUR LINES ARE NOW WRITTEN, AND HERE IS THE MEASUREMENT THAT FORCED THEM.
+        The trade above - "reasonable for an extension the owner installs on their own computer"
+        - quietly stopped being true the moment this route was reachable through the tunnel,
+        because the desk's access code is PUBLISHED to the world in desk.json so the page can
+        supply it without anyone typing one. Both halves are individually fine and together they
+        are a hole. Proven against the live desk on 2026-09-11, scraping the code from the public
+        page and posting an address nobody owns:
+
+            POST /signin-extension {"email":"not-a-real-person-9f3a@example.invalid","code":<public>}
+            -> {"ok": true, "user": "not-a-real-person-9f3a@example.invalid", ...}
+
+        Substitute rj45thompson@gmail.com for that address and any visitor is signed in as the
+        owner, holding his uploads folder and the resume in it. _gate() cannot stop this: a public
+        code authenticates nobody.
+
+        So the route is now LOCAL ONLY. The extension reaches the desk on 127.0.0.1 (background.js
+        falls through to it), which is exactly the case the docstring describes and the only one
+        it ever justified. Signing in over the tunnel needs a real identity, and that is /signin
+        with a Google ID token verified by google_identity() - which needs a GOOGLE_CLIENT_ID the
+        desk cannot create for itself.
         """
+        if not self._is_local():
+            log(f"refused a tunnel sign-in attempt from {self._client_ip()}")
+            return self._fail(
+                "This desk cannot sign you in over the internet yet. It has no Google client id, "
+                "and the extension door only works on the computer the desk runs on.",
+                "signin_local_only", 403)
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
