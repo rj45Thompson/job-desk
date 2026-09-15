@@ -2,6 +2,11 @@
 
 Built 2026-09-14 with the `usecase-map` skill. **No product code was changed to write this.**
 
+**MODE: clone-and-change.** The reference product is the desk as it runs today, and the change is
+productisation (owner pays, users bring no key, custom skills, self-editing). So the end-to-end
+system basics are harvested from the running system and marked HAVE, while the product intent
+comes from RJ's own words and its gaps are marked INFERRED.
+
 ## The layering, corrected 2026-09-14
 
 RJ: *"I never said don't get requirements from code but our code is not the first set of
