@@ -1,5 +1,15 @@
 # Job Desk - productisation burn-down
 
+## 14 OPEN / 0 DONE  (2026-09-14)
+
+**This file is the durable state.** The keep-going loop reads it off disk at the top of every
+iteration, before anything else, because context does not survive compaction and this does.
+Work ONE item, verify its stated observable, rewrite its line in place with the measured
+result, commit, then re-read this file. Blocked is a result, not a stop - record it and move
+to the next item. Stop when a whole pass moves nothing.
+
+Nothing here is waiting on RJ except the two marked **RJ**.
+
 Generated 2026-09-14 from `USE_CASES.md`, which was built with the `usecase-map` skill from RJ's
 own words rather than from the code. **Every item below is an INFERRED requirement** - the chain
 needed it and no authored requirement covers it. That is not a coincidence: this repo has no
