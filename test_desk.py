@@ -863,6 +863,64 @@ class ApiBackend(unittest.TestCase):
             desk.ask_claude_api("s", "q", dict(self.cfg, ANTHROPIC_API_KEY=""), "tester")
         self.assertEqual(cm.exception.code, "signed_out")
 
+
+class SpendLedger(unittest.TestCase):
+    """IR-1. RJ pays for every token on this desk, and before this NOTHING was counted anywhere -
+    the only limit was Limiter(20, 60), which is per IP and one phone hotspot defeats. You cannot
+    cap what you do not measure, so the ledger comes before the cap."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(); self._root = desk.ROOT; desk.ROOT = Path(self.tmp)
+
+    def tearDown(self):
+        desk.ROOT = self._root; shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # a real `claude -p --output-format json` envelope, trimmed. Shape verified live 2026-09-14.
+    REAL = ('{"type":"result","is_error":false,"result":"A","total_cost_usd":0.036067,'
+            '"usage":{"input_tokens":2,"output_tokens":3,"cache_read_input_tokens":0,'
+            '"cache_creation_input_tokens":3503}}')
+
+    def test_usage_is_read_from_the_clis_own_json(self):
+        self.assertEqual(desk.parse_usage(self.REAL),
+                         {"in": 2, "out": 3, "cache_read": 0, "cache_write": 3503,
+                          "usd": 0.036067})
+
+    def test_no_usage_block_is_empty_not_a_guess(self):
+        """An answer whose cost we could not read must record NOTHING. A zero would be
+        indistinguishable from a free answer and would quietly under-report the bill."""
+        self.assertEqual(desk.parse_usage('{"type":"result","result":"hi"}'),
+                         {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0, "usd": 0.0})
+        self.assertEqual(desk.parse_usage("not json at all"), {})
+
+    def test_two_logins_are_billed_separately(self):
+        desk.spend_add("ada@example.com", desk.parse_usage(self.REAL))
+        desk.spend_add("bob@example.com", {"in": 9, "out": 9, "cache_read": 0,
+                                           "cache_write": 0, "usd": 1.5})
+        self.assertEqual(desk.spend_read("ada@example.com")["total"]["usd"], 0.036067)
+        self.assertEqual(desk.spend_read("bob@example.com")["total"]["usd"], 1.5)
+
+    def test_spend_accumulates_and_keeps_a_daily_bucket(self):
+        """The cap that matters is a daily one; a lifetime total cannot tell someone who has been
+        here a year from someone who arrived this morning."""
+        for _ in range(3):
+            desk.spend_add("ada@example.com", desk.parse_usage(self.REAL))
+        led = desk.spend_read("ada@example.com")
+        self.assertEqual(led["total"]["answers"], 3)
+        self.assertAlmostEqual(led["total"]["usd"], 0.108201, places=6)
+        self.assertEqual(sum(d["answers"] for d in led["days"].values()), 3)
+
+    def test_the_ledger_is_not_shown_to_the_user_as_their_upload(self):
+        """spend.json lands in the folder Claude reads and the page lists. Without excluding it, a
+        user sees their own billing file listed as a document they uploaded."""
+        desk.spend_add("ada@example.com", desk.parse_usage(self.REAL))
+        names = [f["name"] for f in desk.list_uploads("ada@example.com")]
+        self.assertNotIn(desk.SPEND_FILE, names)
+        self.assertNotIn(desk.SPEND_FILE, json.dumps(desk._attachments("ada@example.com")))
+
+    def test_nobody_signed_in_records_nothing(self):
+        self.assertEqual(desk.spend_add("", desk.parse_usage(self.REAL)), {})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

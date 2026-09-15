@@ -448,13 +448,86 @@ def project_write(user, data: dict) -> None:
     project_path(user).write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
+SPEND_FILE = "spend.json"
+
+
+def parse_usage(out: str) -> dict:
+    """What one answer cost, read from the CLI's own JSON. `{}` when it reported nothing.
+
+    Measured 2026-09-14: `claude -p --output-format json` returns `usage` (input_tokens,
+    output_tokens, cache_read_input_tokens, cache_creation_input_tokens) AND `total_cost_usd`.
+    Dollars are better than tokens for a ledger whose whole job is "what is this costing RJ",
+    so they are recorded when present rather than re-derived from a price table that would go
+    stale the next time pricing moves.
+    """
+    for candidate in (out, *reversed(out.splitlines())):
+        candidate = candidate.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            d = json.loads(candidate)
+        except ValueError:
+            continue
+        if not isinstance(d, dict) or "result" not in d:
+            continue
+        u = d.get("usage") or {}
+        if not isinstance(u, dict):
+            u = {}
+        return {"in": int(u.get("input_tokens") or 0),
+                "out": int(u.get("output_tokens") or 0),
+                "cache_read": int(u.get("cache_read_input_tokens") or 0),
+                "cache_write": int(u.get("cache_creation_input_tokens") or 0),
+                "usd": float(d.get("total_cost_usd") or 0.0)}
+    return {}
+
+
+def spend_path(user=None) -> Path:
+    return uploads_dir(user) / SPEND_FILE
+
+
+def spend_read(user=None) -> dict:
+    if not user_slug(user):
+        return {}
+    try:
+        return json.loads(spend_path(user).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def spend_add(user, usage: dict) -> dict:
+    """Add one answer to this login's ledger and return the new totals.
+
+    IR-1. RJ pays for every token on this desk and, before this, NOTHING was counted anywhere -
+    the only limit was Limiter(20, 60) and it is per IP, which one phone hotspot defeats. You
+    cannot cap what you do not measure, so measuring comes first and the cap (IR-1b) reads this.
+
+    Kept per DAY as well as in total because the cap that matters is a daily one; a lifetime
+    total cannot tell a user who has been here a year from one who arrived this morning.
+    """
+    if not user_slug(user) or not usage:
+        return {}
+    led = spend_read(user) or {}
+    tot = led.setdefault("total", {})
+    day = led.setdefault("days", {}).setdefault(time.strftime("%Y-%m-%d"), {})
+    for bucket in (tot, day):
+        for k in ("in", "out", "cache_read", "cache_write"):
+            bucket[k] = int(bucket.get(k) or 0) + int(usage.get(k) or 0)
+        bucket["usd"] = round(float(bucket.get("usd") or 0.0) + float(usage.get("usd") or 0.0), 6)
+        bucket["answers"] = int(bucket.get("answers") or 0) + 1
+    try:
+        spend_path(user).write_text(json.dumps(led, indent=1), encoding="utf-8")
+    except OSError as e:
+        log(f"spend ledger could not be written for {user_slug(user)}: {e}")
+    return led
+
+
 def list_uploads(user=None) -> list:
     if not user_slug(user):
         return []                      # nobody signed in: an empty desk, not an error
     try:
         return sorted(
             ({"name": p.name, "bytes": p.stat().st_size} for p in uploads_dir(user).iterdir()
-             if p.is_file() and p.name != PROJECT_FILE),
+             if p.is_file() and p.name not in (PROJECT_FILE, SPEND_FILE)),
             key=lambda f: f["name"].lower())
     except OSError:
         return []
@@ -561,7 +634,7 @@ def _attachments(who) -> list:
     blocks, skipped = [], []
     try:
         paths = sorted(p for p in uploads_dir(who).iterdir()
-                       if p.is_file() and p.name != PROJECT_FILE)
+                       if p.is_file() and p.name not in (PROJECT_FILE, SPEND_FILE))
     except (OSError, DeskError):
         return []
     for p in paths:
@@ -633,6 +706,18 @@ def ask_claude_api(system: str, user: str, cfg: dict, who=None) -> str:
         raise DeskError("upstream", f"Anthropic returned {e.status_code}.", 502)
     except anthropic.APIConnectionError:
         raise DeskError("upstream", "The desk could not reach Anthropic.", 502)
+
+    # Same ledger as the CLI path. The API gives tokens but no dollar figure, so `usd` stays 0
+    # here and the token columns carry the meaning - recording a price computed from a table in
+    # this file would go stale the next time pricing moves and would then be wrong with
+    # confidence, which is worse than absent.
+    u = getattr(msg, "usage", None)
+    if u is not None:
+        spend_add(who, {"in": getattr(u, "input_tokens", 0) or 0,
+                        "out": getattr(u, "output_tokens", 0) or 0,
+                        "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
+                        "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+                        "usd": 0.0})
 
     # A refusal is an ANSWER, not an exception, and it arrives with HTTP 200 - checking
     # stop_reason before reading content is the difference between reporting it and printing "".
@@ -766,6 +851,11 @@ def ask_claude(system: str, user: str, cfg: dict, who=None) -> str:
     out = (proc.stdout or "").strip()
     err = (proc.stderr or "").strip()
     text, is_error = parse_result(out)
+    # Recorded BEFORE the error check on purpose: a question that failed can still have burned
+    # tokens, and a ledger that only counts successes under-reports exactly the runs worth
+    # watching. spend_add is defensive about a missing usage block and returns {} rather than
+    # raising - an accounting problem must never cost the user their answer.
+    spend_add(who, parse_usage(out))
     said = text or err or "claude returned nothing"
     if proc.returncode != 0 or is_error:
         if re.search(r"not logged in|log ?in|authenticat|oauth|sign(ed)? in", said, re.I):
