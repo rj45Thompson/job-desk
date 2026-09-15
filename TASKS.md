@@ -1,6 +1,6 @@
 # Job Desk - productisation burn-down
 
-## 13 OPEN / 1 DONE  (2026-09-14)
+## 13 OPEN / 2 DONE  (2026-09-14)
 
 **This file is the durable state.** The keep-going loop reads it off disk at the top of every
 iteration, before anything else, because context does not survive compaction and this does.
@@ -65,6 +65,19 @@ something that can cost RJ real money outranks both.
       desk is unavailable rather than shown an API error.
 
 ## Rung 2 - RJ asked for these directly
+
+- [x] **CLI cold-started on every question.** DONE 2026-09-14. RJ: *"the cli isn't supposed to
+      cold start at all."* It was: each question spawned a fresh process with
+      `--no-session-persistence`, so the model was handed the whole conversation again as plain
+      text every turn and rebuilt its context from nothing. The session id the CLI returns is now
+      stored per login (outside the user's folder - it is plumbing, not their document) and
+      replayed with `--resume`, and `build_user_turn` stops re-sending the transcript once a
+      session carries it.
+      *Observable MET:* call 2 correctly answered "what did I first ask you" with the transcript
+      no longer being sent. Incremental cost of a resumed follow-up **$0.0037** against a ~$0.036
+      cold start.
+      *Fence re-verified ON A RESUMED SESSION* (resuming could have restored prior settings):
+      exactly Glob, Grep, Read, WebFetch, WebSearch and `MCP: NONE`. 4 tests; suite 88 green.
 
 - [ ] **Chrome extension finished.** `extension/` is complete and correctly targeted (MV3,
       `content_scripts` match the github.io origin) but has never been installed or confirmed

@@ -921,6 +921,56 @@ class SpendLedger(unittest.TestCase):
         self.assertEqual(desk.spend_add("", desk.parse_usage(self.REAL)), {})
 
 
+
+class SessionResume(unittest.TestCase):
+    """RJ: "the cli isn't supposed to cold start at all." It was. Every question spawned a fresh
+    process with --no-session-persistence, so the model was handed the entire conversation again as
+    plain text every turn and rebuilt its context from nothing."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(); self._root = desk.ROOT; desk.ROOT = Path(self.tmp)
+
+    def tearDown(self):
+        desk.ROOT = self._root; shutil.rmtree(self.tmp, ignore_errors=True)
+
+    ENV = ('{"type":"result","is_error":false,"result":"hi",'
+           '"session_id":"063aaef6-d12c-4951-aaaa-000000000001"}')
+
+    def test_the_session_id_is_captured_from_the_reply(self):
+        self.assertEqual(desk.parse_session(self.ENV),
+                         "063aaef6-d12c-4951-aaaa-000000000001")
+        self.assertEqual(desk.parse_session("not json"), "")
+
+    def test_the_session_is_kept_per_login(self):
+        desk.session_write("ada@example.com", "sid-ada")
+        desk.session_write("bob@example.com", "sid-bob")
+        self.assertEqual(desk.session_read("ada@example.com"), "sid-ada")
+        self.assertEqual(desk.session_read("bob@example.com"), "sid-bob")
+
+    def test_the_session_id_is_not_in_the_users_own_folder(self):
+        """Everything in a login's folder is listed on the page and read by the model. A session id
+        is desk plumbing, not the user's document."""
+        desk.session_write("ada@example.com", "sid-ada")
+        names = [f["name"] for f in desk.list_uploads("ada@example.com")]
+        self.assertEqual(names, [])
+        self.assertNotIn("sid-ada", json.dumps(desk._attachments("ada@example.com")))
+
+    def test_a_resumed_turn_does_not_resend_the_transcript(self):
+        """The whole point. If the session already holds the history, sending it again duplicates
+        the conversation instead of continuing it."""
+        req = desk.read_request({"messages": [
+            {"role": "user", "content": "FIRST QUESTION"},
+            {"role": "assistant", "content": "EARLIER ANSWER"},
+            {"role": "user", "content": "the live one"}]})
+        cold = desk.build_user_turn(dict(req, resumed=False))
+        warm = desk.build_user_turn(dict(req, resumed=True))
+        self.assertIn("EARLIER ANSWER", cold)
+        self.assertNotIn("EARLIER ANSWER", warm)
+        self.assertNotIn("Transcript of earlier messages", warm)
+        self.assertTrue(warm.rstrip().endswith("the live one"))
+        self.assertLess(len(warm), len(cold))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

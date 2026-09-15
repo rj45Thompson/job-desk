@@ -264,7 +264,7 @@ def build_user_turn(req: dict) -> str:
         parts.append("<application>\n"
                      + "\n".join(f"{k}: {v}" for k, v in req["application"].items())
                      + "\n</application>")
-    earlier = req["messages"][:-1]
+    earlier = [] if req.get("resumed") else req["messages"][:-1]
     if earlier:
         convo = "\n\n".join(("Them: " if m["role"] == "user" else "You: ") + m["content"]
                             for m in earlier)
@@ -446,6 +446,51 @@ def project_write(user, data: dict) -> None:
     have I applied for", it can open this and answer instead of being told.
     """
     project_path(user).write_text(json.dumps(data, indent=1), encoding="utf-8")
+
+
+def session_path(user=None) -> Path:
+    """Where this login's CLI session id lives.
+
+    Deliberately NOT inside the user's own folder: everything in there is listed on the page and
+    read by the model, and a session id is desk plumbing, not the user's document. Kept beside the
+    per-login folders so it follows DESK_UPLOADS onto the same volume.
+    """
+    d = uploads_base() / ".sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / (user_slug(user) + ".txt")
+
+
+def session_read(user=None) -> str:
+    if not user_slug(user):
+        return ""
+    try:
+        return session_path(user).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def session_write(user, sid: str) -> None:
+    if not user_slug(user) or not sid:
+        return
+    try:
+        session_path(user).write_text(sid.strip(), encoding="utf-8")
+    except OSError as e:
+        log(f"session id could not be stored for {user_slug(user)}: {e}")
+
+
+def parse_session(out: str) -> str:
+    """The session id the CLI just used, so the next question can resume it instead of cold-starting."""
+    for candidate in (out, *reversed(out.splitlines())):
+        candidate = candidate.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            d = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(d, dict) and "result" in d:
+            return str(d.get("session_id") or "")
+    return ""
 
 
 SPEND_FILE = "spend.json"
@@ -833,8 +878,17 @@ def ask_claude(system: str, user: str, cfg: dict, who=None) -> str:
                    # --restricted additionally ignores user/project/local settings files, so the
                    # desk stops inheriting this machine's CLAUDE.md, skills, plugins and hooks,
                    # and confines the file tools to cwd and --add-dir.
-                   "--restricted", "--strict-mcp-config",
-                   "--no-session-persistence"]
+                   "--restricted", "--strict-mcp-config"]
+    # RESUME INSTEAD OF COLD-STARTING. Every question used to spawn a fresh process with
+    # --no-session-persistence, which meant the model was handed the entire conversation again as
+    # plain text on every single turn and rebuilt its whole context from nothing. Measured
+    # 2026-09-14: a cold first call wrote 3,503 tokens before the question was even read.
+    # --no-session-persistence is what made resuming impossible, so it is gone; the session id the
+    # CLI returns is stored per login and replayed, and build_user_turn stops re-sending the
+    # transcript once there is a session to carry it.
+    sid = session_read(who)
+    if sid:
+        args += ["--resume", sid]
     timeout = float(cfg.get("CLAUDE_TIMEOUT") or DEFAULTS["CLAUDE_TIMEOUT"])
     try:
         proc = subprocess.run(args, input=user, capture_output=True, text=True,
@@ -856,6 +910,7 @@ def ask_claude(system: str, user: str, cfg: dict, who=None) -> str:
     # watching. spend_add is defensive about a missing usage block and returns {} rather than
     # raising - an accounting problem must never cost the user their answer.
     spend_add(who, parse_usage(out))
+    session_write(who, parse_session(out))
     said = text or err or "claude returned nothing"
     if proc.returncode != 0 or is_error:
         if re.search(r"not logged in|log ?in|authenticat|oauth|sign(ed)? in", said, re.I):
@@ -1107,6 +1162,9 @@ class Desk(http.server.BaseHTTPRequestHandler):
                               "own name, and nobody else's are visible.", "sign_in", 403)
         jid = secrets.token_urlsafe(9)
         who = req["user"]
+        # A live session already holds the earlier turns, so re-sending them would duplicate the
+        # whole conversation rather than continue it.
+        req["resumed"] = bool(session_read(who))
         turn = build_user_turn(req)
         asked = len(req["messages"][-1]["content"])
         job_put(jid, state="running", at=time.time())
