@@ -8,7 +8,9 @@ Work ONE item, verify its stated observable, rewrite its line in place with the 
 result, commit, then re-read this file. Blocked is a result, not a stop - record it and move
 to the next item. Stop when a whole pass moves nothing.
 
-Nothing here is waiting on RJ except the two marked **RJ**.
+Nothing here is blocked on RJ. Two items need a decision recorded before they can be built -
+what the Chrome extension is FOR now that Google sign-in works on the page, and whether
+self-editing gets its own gated path - and both say so in the item itself.
 
 Generated 2026-09-14 from `USE_CASES.md`, which was built with the `usecase-map` skill from RJ's
 own words rather than from the code. **Every item below is an INFERRED requirement** - the chain
@@ -113,7 +115,11 @@ something that can cost RJ real money outranks both.
 py .opus-tools/autobot/interrogate.py --doc USE_CASES.md
 ```
 
-2026-09-14 baseline: **10 sections, 27 steps, 5 modules, 38 open questions**
-(8 inferred + 30 baseline-probe facets). 5/35 facets answered.
+2026-09-14 baseline: **12 sections, 36 steps, 6 modules, 45 open questions**
+(9 inferred + 36 baseline-probe facets). 6/42 facets answered.
+
+Re-run this after any change to USE_CASES.md and update the line above. The first version of this
+file quoted 38 questions from a run taken BEFORE `EPIC JD-E0` was added, which is exactly the kind
+of stale number a loop reads as fact and never re-checks.
 
 The count has to reach zero. "Every requirement" is a count, not a feeling.
