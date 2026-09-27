@@ -386,6 +386,30 @@ def safe_name(raw) -> str:
     return stem + ext
 
 
+# ── Why sign-in is IDENTITY ONLY, and why the desk holds nobody's Gmail ──────────────
+# RJ, 2026-09-27: "I need it connected to whoever logs in right. For the user not me."
+#
+# What is here proves WHO someone is (a Google ID token, checked below). It grants no access to
+# their mail, and that is deliberate rather than unfinished:
+#
+#  * Creating a draft in someone else's mailbox needs the OAuth scope `gmail.compose`, which Google
+#    classifies as RESTRICTED. An app asking for it outside your own Workspace domain must pass
+#    Google's OAuth verification AND a third-party CASA security assessment, renewed annually and
+#    paid for. Until it does, the app is stuck in Testing: at most 100 users, and every refresh
+#    token expires after 7 days - so "connected for whoever logs in" silently breaks weekly.
+#  * It would also mean this box storing other people's Gmail refresh tokens. This desk is reached
+#    through a Cloudflare quick tunnel whose address rotates, on a machine whose owner has already
+#    been compromised once through remote access. A stolen refresh token is a stranger's mailbox.
+#
+# So the page hands the finished draft to the visitor's OWN already-signed-in Gmail through a
+# pre-filled compose URL (see `openInGmail` in index.html). Gmail autosaves it as a draft in their
+# account. No token is issued, stored, or transmitted, it works for any visitor on their first
+# visit, and the person still reads the thing before anything is sent.
+#
+# If per-user OAuth is ever wanted anyway, the missing pieces are: a client SECRET (this file only
+# holds the public client id), /auth/google/start + /auth/google/callback with PKCE, an encrypted
+# per-user token store, and the Google verification above. Do not start it without that last one.
+
 GOOGLE_ISS = ("accounts.google.com", "https://accounts.google.com")
 GOOGLE_TOKENINFO = "https://oauth2.googleapis.com/tokeninfo?id_token="
 

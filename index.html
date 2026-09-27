@@ -116,7 +116,9 @@ textarea{resize:vertical;min-height:38px;line-height:1.45}
 .msg pre{background:var(--sunk);padding:8px 10px;border-radius:6px;overflow:auto;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap}
 .msg code{font-family:var(--mono);font-size:12.5px;background:var(--sunk);padding:1px 4px;border-radius:4px}
 .msg .copy{position:absolute;top:6px;right:6px;opacity:0;transition:opacity .15s}
+.msg .togmail{position:absolute;top:6px;right:58px;opacity:0;transition:opacity .15s;white-space:nowrap}
 .msg:hover .copy,.msg:focus-within .copy{opacity:1}
+.msg:hover .togmail,.msg:focus-within .togmail{opacity:1}
 .thinking{color:var(--soft);font-style:italic}
 .thinking .t{font-family:var(--mono);font-style:normal;color:var(--faint);margin-left:6px;font-size:12px}
 .chips{display:flex;gap:6px;padding:0 16px 8px;flex-wrap:wrap}
@@ -956,14 +958,63 @@ function md(text) {
   return out.join("");
 }
 
+/* Hand a drafted email to the SIGNED-IN PERSON'S OWN Gmail.
+
+   This deliberately does not hold anyone's Gmail credentials. The desk never sees a Gmail token,
+   stores no refresh token for anybody, and can still put a draft in whichever account the visitor
+   is signed into - because their own browser is already authenticated to Gmail and we simply open
+   a pre-filled compose in it. Gmail autosaves that compose as a draft the moment it opens.
+   `authuser` aims it at the address they signed into the desk with, which matters for anyone with
+   several Google accounts in one browser.
+
+   The alternative - real OAuth with gmail.compose - is a Google RESTRICTED scope: usable only for
+   <=100 testers with refresh tokens that die after 7 days, until the app passes Google's OAuth
+   verification plus an annual third-party CASA security assessment. See the note in desk.py. */
+function looksLikeEmail(t) {
+  return /^\s*(subject|to)\s*:/im.test(t) || /\b(dear|hi|hello)\b[^\n]{0,40}\n/i.test(t) ||
+         /\b(regards|sincerely|thank you|thanks)\b[^\n]{0,30}\s*$/i.test(t.slice(-160));
+}
+function splitEmail(text) {
+  const lines = text.split("\n");
+  let subject = "", to = "", start = 0;
+  for (let i = 0; i < Math.min(lines.length, 8); i++) {
+    const m = /^\s*(subject|to)\s*:\s*(.+?)\s*$/i.exec(lines[i]);
+    if (!m) { if (lines[i].trim() === "" && (subject || to)) { start = i + 1; continue; } break; }
+    if (m[1].toLowerCase() === "subject") subject = m[2]; else to = m[2];
+    start = i + 1;
+  }
+  return { to, subject, body: lines.slice(start).join("\n").replace(/^\n+/, "") };
+}
+function openInGmail(text, btn) {
+  const p = splitEmail(text);
+  const q = new URLSearchParams({ view: "cm", fs: "1", tf: "1" });
+  if (p.to) q.set("to", p.to);
+  if (p.subject) q.set("su", p.subject);
+  q.set("body", p.body || text);
+  if (user && user.indexOf("@") > 0) q.set("authuser", user);
+  const url = "https://mail.google.com/mail/?" + q.toString();
+  if (url.length > 7500) {           // Gmail truncates very long compose URLs; do not lose the text
+    navigator.clipboard.writeText(text).catch(() => {});
+    toast("That draft is too long to hand to Gmail in a link, so I copied it instead. Paste it into a new message.", true);
+    return;
+  }
+  window.open(url, "_blank", "noopener");
+  if (btn) { btn.textContent = "Opened"; setTimeout(() => btn.textContent = "To my Gmail", 1600); }
+}
+
 function bubble(role, text) {
   const el = document.createElement("div");
   el.className = "msg " + role;
   if (role === "assistant") {
-    el.innerHTML = md(text) + '<button class="tiny copy" title="Copy the text">Copy</button>';
+    const wantsGmail = looksLikeEmail(text);
+    el.innerHTML = md(text)
+      + (wantsGmail ? '<button class="tiny togmail" title="Open this as a new message in your own Gmail, where it saves as a draft">To my Gmail</button>' : "")
+      + '<button class="tiny copy" title="Copy the text">Copy</button>';
     el.querySelector(".copy").addEventListener("click", async (e) => {
       try { await navigator.clipboard.writeText(text); e.target.textContent = "Copied"; setTimeout(() => e.target.textContent = "Copy", 1200); } catch {}
     });
+    const g = el.querySelector(".togmail");
+    if (g) g.addEventListener("click", (e) => openInGmail(text, e.target));
   } else {
     el.textContent = text;
   }
